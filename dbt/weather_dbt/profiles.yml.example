@@ -1,0 +1,14 @@
+# Copy to profiles.yml (same directory) for local dbt runs outside Airflow.
+# Inside the Airflow containers, this same path is used automatically.
+weather_dbt:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: "{{ env_var('WAREHOUSE_DB_HOST', 'localhost') }}"
+      port: "{{ env_var('WAREHOUSE_DB_PORT', '5432') | as_number }}"
+      user: "{{ env_var('WAREHOUSE_DB_USER', 'warehouse') }}"
+      password: "{{ env_var('WAREHOUSE_DB_PASSWORD', 'warehouse') }}"
+      dbname: "{{ env_var('WAREHOUSE_DB_NAME', 'warehouse') }}"
+      schema: staging
+      threads: 4

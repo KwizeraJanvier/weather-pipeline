@@ -1,0 +1,10 @@
+.env
+__pycache__/
+*.pyc
+.DS_Store
+
+# dbt
+dbt/weather_dbt/target/
+dbt/weather_dbt/dbt_packages/
+dbt/weather_dbt/logs/
+dbt/weather_dbt/profiles.yml

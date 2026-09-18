@@ -1,0 +1,10 @@
+version: 2
+
+models:
+  - name: stg_weather
+    description: "Cleaned view over the raw daily weather readings."
+    columns:
+      - name: city
+        tests: [not_null]
+      - name: date
+        tests: [not_null]

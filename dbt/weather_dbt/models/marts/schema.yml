@@ -1,0 +1,5 @@
+version: 2
+
+models:
+  - name: fct_daily_weather
+    description: "One row per city per day with derived weather metrics, ready for dashboarding."
