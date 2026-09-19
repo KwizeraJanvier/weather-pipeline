@@ -73,6 +73,26 @@ export AIRFLOW_HOME="$(pwd)/airflow_home"
 # then edit airflow_home/airflow.cfg: dags_folder -> this project's dags/ folder,
 # load_examples -> False (already done on this machine)
 
+# macOS fork-safety fix (see "Known issue" below) - required for
+# `airflow standalone` / gunicorn to not crash. Not tracked by git since
+# .venv/ is gitignored - recreate these two files if the venv is rebuilt.
+cat > .venv/lib/python3.12/site-packages/_patch_setproctitle_hook.py <<'EOF'
+import sys
+
+if sys.platform == "darwin":
+    try:
+        import setproctitle
+    except ImportError:
+        pass
+    else:
+        def _noop_title(title: str) -> None:
+            return None
+
+        setproctitle.setproctitle = _noop_title
+        setproctitle.setthreadtitle = _noop_title
+EOF
+echo "import _patch_setproctitle_hook" > .venv/lib/python3.12/site-packages/_patch_setproctitle.pth
+
 # Metabase jar (~660MB download from downloads.metabase.com)
 mkdir -p metabase
 curl -L -o metabase/metabase.jar "https://downloads.metabase.com/latest/metabase.jar"
@@ -81,6 +101,28 @@ curl -L -o metabase/metabase.jar "https://downloads.metabase.com/latest/metabase
 > Note on dbt versions: newer `dbt-core` releases (2.x) moved Postgres to an
 > experimental adapter tier. This project pins `dbt-core`/`dbt-postgres` to
 > the `1.8.x` line, which fully supports Postgres.
+
+### Known issue: gunicorn/Airflow crash-loops with SIGSEGV on this macOS build
+
+`airflow standalone` (and plain `airflow webserver`) forks worker processes,
+and each forked worker calls `setproctitle()` to rename itself for `ps`/
+Activity Monitor. On this macOS version, that native call segfaults inside
+CoreFoundation/os_log immediately after fork - even with `setproctitle`'s own
+built-in fix for this exact class of bug (its issue #113). Left unfixed,
+gunicorn's arbiter respawns the crashing worker in an infinite loop, spiking
+CPU and process count.
+
+The fix (already applied to this project's `.venv`, see the setup script
+above): a `.pth` file in the venv's `site-packages` that disables
+`setproctitle`'s native title-setting on macOS in favor of a harmless
+no-op, for every Python process that uses this venv. This only affects how
+processes are labeled in `ps`; it has no effect on Airflow's functionality.
+
+If `airflow standalone` ever crash-loops with repeated `SIGSEGV` lines again
+(e.g. after recreating the venv), that's this same issue - recreate the two
+files shown in the setup script above, or check whether a newer
+`setproctitle` release has fixed it upstream (`pip index versions
+setproctitle`) and remove the workaround if so.
 
 ## Everyday use
 
@@ -94,12 +136,17 @@ brew services list   # should show postgresql@16 as "started"
 
 ```bash
 cd "/Users/janvier/Data Engineer Project"
+source .venv/bin/activate
 export AIRFLOW_HOME="$(pwd)/airflow_home"
-.venv/bin/airflow standalone
+airflow standalone
 ```
 
-First run prints an auto-generated admin password to the terminal — note it
-down. Leave this running in its own terminal tab; open
+Activating the venv (rather than calling `.venv/bin/airflow` directly)
+matters here: `standalone` spawns `airflow webserver`/`scheduler`/`triggerer`
+as subprocesses that look for `airflow` on `PATH`, which only works once the
+venv is activated.
+
+Login: `admin` / `admin`. Leave this running in its own terminal tab; open
 [localhost:8080](http://localhost:8080), log in, unpause `weather_pipeline`,
 and trigger it manually to run it now (it's also scheduled `@daily`).
 
