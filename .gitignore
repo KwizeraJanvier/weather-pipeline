@@ -3,8 +3,20 @@ __pycache__/
 *.pyc
 .DS_Store
 
+# Python virtualenv
+.venv/
+
+# Airflow local runtime (metadata db, logs, webserver config)
+airflow_home/
+
+# Metabase jar (downloaded, not committed) and its local app data
+metabase/metabase.jar
+metabase/metabase.db*
+metabase/plugins/
+
 # dbt
 dbt/weather_dbt/target/
 dbt/weather_dbt/dbt_packages/
 dbt/weather_dbt/logs/
 dbt/weather_dbt/profiles.yml
+dbt/weather_dbt/.user.yml

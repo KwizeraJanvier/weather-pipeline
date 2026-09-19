@@ -5,6 +5,9 @@ historical weather for a handful of cities, loads it into a Postgres
 warehouse, transforms it with dbt, orchestrates the whole thing with Airflow,
 and visualizes it with Metabase.
 
+Everything runs natively on macOS via Homebrew + a Python virtualenv — no
+Docker.
+
 ## Architecture
 
 ```
@@ -26,66 +29,96 @@ Airflow DAG "weather_pipeline" runs extraction --> dbt run, daily.
   of daily weather (max/min temp, precipitation, wind) per city from
   [Open-Meteo](https://open-meteo.com/) (no API key needed) and upserts it
   into `raw.weather_daily`.
-- **Warehouse** — a single Postgres instance. It also hosts Airflow's own
-  metadata in a separate database (`airflow_meta`) so you only run one
-  Postgres container.
+- **Warehouse** — a native Postgres 16 instance (via Homebrew), holding the
+  `raw`, `staging`, and `marts` schemas.
 - **Transform** (`dbt/weather_dbt`) — dbt models that clean the raw data
   (`stg_weather`) and build an analytics-ready fact table
   (`fct_daily_weather`) with derived columns like temperature range and a
-  rain-day flag.
-- **Orchestration** (`dags/weather_pipeline_dag.py`) — an Airflow DAG that
-  runs extraction, then `dbt run`, once a day.
-- **Visualization** — [Metabase](https://www.metabase.com/), pointed at the
-  warehouse, for building a dashboard on top of `marts.fct_daily_weather`.
+  rain-day flag, landed in the `marts` schema.
+- **Orchestration** (`dags/weather_pipeline_dag.py`) — an Airflow DAG (run in
+  standalone mode, no containers) that runs extraction, then `dbt run`, once
+  a day.
+- **Visualization** — [Metabase](https://www.metabase.com/), run as a plain
+  `.jar`, pointed at the warehouse, for building a dashboard on top of
+  `marts.fct_daily_weather`.
 
-## Prerequisites
+## One-time setup (already done for this machine)
 
-- Docker and Docker Compose
-- ~4GB of free RAM for the containers (Postgres + Airflow x3 + Metabase)
+These steps were run once to provision the machine — included here for
+reference / for setting this up on another Mac:
 
-## Setup
+```bash
+brew install postgresql@16 python@3.12 openjdk
+brew services start postgresql@16
 
-1. Copy the env file and adjust if you want (defaults work as-is):
+# Create the warehouse role + database
+psql -U "$(whoami)" -d postgres -c "CREATE ROLE warehouse LOGIN PASSWORD 'warehouse';"
+psql -U "$(whoami)" -d postgres -c "CREATE DATABASE warehouse OWNER warehouse;"
+psql "postgresql://warehouse:warehouse@localhost:5432/warehouse" -f sql/init_warehouse_schemas.sql
 
-   ```bash
-   cp .env.example .env
-   ```
+# Project virtualenv with Airflow + dbt
+python3.12 -m venv .venv
+AIRFLOW_VERSION=2.9.3
+PYTHON_VERSION=3.12
+CONSTRAINT_URL="https://raw.githubusercontent.com/apache/airflow/constraints-${AIRFLOW_VERSION}/constraints-${PYTHON_VERSION}.txt"
+.venv/bin/pip install "apache-airflow==${AIRFLOW_VERSION}" --constraint "${CONSTRAINT_URL}" \
+    "dbt-core==1.8.*" "dbt-postgres==1.8.*" "requests==2.32.3" "psycopg2-binary==2.9.9"
 
-2. Build the images (this installs dbt and the extraction script's Python
-   deps into the Airflow image):
+# dbt profile (local only, not committed)
+cp dbt/weather_dbt/profiles.yml.example dbt/weather_dbt/profiles.yml
 
-   ```bash
-   docker compose build
-   ```
+# Airflow metadata db, pointed at this project's dags/ folder
+export AIRFLOW_HOME="$(pwd)/airflow_home"
+.venv/bin/airflow db migrate
+# then edit airflow_home/airflow.cfg: dags_folder -> this project's dags/ folder,
+# load_examples -> False (already done on this machine)
 
-3. Initialize Airflow's metadata DB and admin user:
+# Metabase jar (~660MB download from downloads.metabase.com)
+mkdir -p metabase
+curl -L -o metabase/metabase.jar "https://downloads.metabase.com/latest/metabase.jar"
+```
 
-   ```bash
-   docker compose up airflow-init
-   ```
+> Note on dbt versions: newer `dbt-core` releases (2.x) moved Postgres to an
+> experimental adapter tier. This project pins `dbt-core`/`dbt-postgres` to
+> the `1.8.x` line, which fully supports Postgres.
 
-4. Start everything:
+## Everyday use
 
-   ```bash
-   docker compose up -d
-   ```
+### 1. Make sure Postgres is running
 
-5. Open the Airflow UI at [localhost:8080](http://localhost:8080)
-   (username/password: `admin` / `admin`, or whatever you set in `.env`).
-   Unpause the `weather_pipeline` DAG and trigger it manually the first time.
+```bash
+brew services list   # should show postgresql@16 as "started"
+```
 
-6. Once the DAG run finishes (extraction + `dbt run`), open Metabase at
-   [localhost:3000](http://localhost:3000), finish its one-time setup, and
-   add a Postgres database connection pointing at:
+### 2. Run Airflow (webserver + scheduler in one process)
 
-   - Host: `postgres` (if adding it from within the Docker network — Metabase
-     is on the same `docker compose` network) or `localhost` if you configure
-     it from your host machine's browser and expose the port differently.
-     Simplest: host `postgres`, port `5432`, database `warehouse`, user/pass
-     from your `.env`.
+```bash
+cd "/Users/janvier/Data Engineer Project"
+export AIRFLOW_HOME="$(pwd)/airflow_home"
+.venv/bin/airflow standalone
+```
 
-7. Build a dashboard/questions on top of the `marts.fct_daily_weather` table
-   — e.g. average max temp by city over time, or rainy days per month.
+First run prints an auto-generated admin password to the terminal — note it
+down. Leave this running in its own terminal tab; open
+[localhost:8080](http://localhost:8080), log in, unpause `weather_pipeline`,
+and trigger it manually to run it now (it's also scheduled `@daily`).
+
+### 3. Run Metabase
+
+```bash
+cd "/Users/janvier/Data Engineer Project/metabase"
+/opt/homebrew/opt/openjdk/bin/java -jar metabase.jar
+```
+
+First run takes a minute or two to initialize its own internal app database.
+Open [localhost:3000](http://localhost:3000), finish the one-time setup, and
+add a Postgres connection:
+
+- Host: `localhost`, Port: `5432`, Database: `warehouse`
+- User: `warehouse`, Password: `warehouse`
+
+Then build a dashboard/questions on top of the `marts.fct_daily_weather`
+table — e.g. average max temp by city over time, or rainy days per month.
 
 ## Running dbt manually (outside Airflow)
 
@@ -94,22 +127,15 @@ DAG every time.
 
 ```bash
 cd dbt/weather_dbt
-cp profiles.yml.example profiles.yml
-pip install dbt-postgres
-export WAREHOUSE_DB_HOST=localhost WAREHOUSE_DB_PORT=5432 \
-       WAREHOUSE_DB_NAME=warehouse WAREHOUSE_DB_USER=warehouse WAREHOUSE_DB_PASSWORD=warehouse
-dbt run
-dbt test
+../../.venv/bin/dbt run --profiles-dir .
+../../.venv/bin/dbt test --profiles-dir .
 ```
 
 ## Running extraction manually
 
 ```bash
 cd extraction
-pip install -r requirements.txt
-export WAREHOUSE_DB_HOST=localhost WAREHOUSE_DB_PORT=5432 \
-       WAREHOUSE_DB_NAME=warehouse WAREHOUSE_DB_USER=warehouse WAREHOUSE_DB_PASSWORD=warehouse
-python fetch_weather.py
+../.venv/bin/python fetch_weather.py
 ```
 
 ## Next steps / ideas to extend this
@@ -117,8 +143,7 @@ python fetch_weather.py
 - Add more cities, or swap in a different data source entirely.
 - Add more dbt tests (e.g. `accepted_values`, custom singular tests for
   physically implausible values).
-- Add a `WeatherApiSensor`/retry policy in the DAG to handle API outages
-  gracefully.
+- Add a retry/backoff policy in the DAG to handle API outages gracefully.
 - Swap Metabase for Superset, or add a Streamlit app for a custom dashboard.
 - Move the warehouse to a free-tier cloud Postgres (e.g. Supabase, Neon) and
   Airflow to a small VM, once you're ready to go beyond local.
@@ -126,6 +151,15 @@ python fetch_weather.py
 ## Stopping / resetting
 
 ```bash
-docker compose down          # stop containers, keep data
-docker compose down -v       # stop containers and wipe volumes (fresh start)
+# Stop Airflow: Ctrl+C in its terminal
+# Stop Metabase: Ctrl+C in its terminal
+brew services stop postgresql@16   # stop Postgres (data persists)
+```
+
+To fully reset the warehouse data:
+
+```bash
+psql -U "$(whoami)" -d postgres -c "DROP DATABASE warehouse;"
+psql -U "$(whoami)" -d postgres -c "CREATE DATABASE warehouse OWNER warehouse;"
+psql "postgresql://warehouse:warehouse@localhost:5432/warehouse" -f sql/init_warehouse_schemas.sql
 ```

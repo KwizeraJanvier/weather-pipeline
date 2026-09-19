@@ -1,7 +1,13 @@
 import sys
 from datetime import datetime
+from pathlib import Path
 
-sys.path.insert(0, "/opt/airflow/extraction")
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+EXTRACTION_DIR = PROJECT_ROOT / "extraction"
+DBT_PROJECT_DIR = PROJECT_ROOT / "dbt" / "weather_dbt"
+DBT_BIN = PROJECT_ROOT / ".venv" / "bin" / "dbt"
+
+sys.path.insert(0, str(EXTRACTION_DIR))
 
 from airflow import DAG
 from airflow.operators.bash import BashOperator
@@ -28,10 +34,7 @@ with DAG(
 
     transform = BashOperator(
         task_id="dbt_run",
-        bash_command=(
-            "cd /opt/airflow/dbt/weather_dbt && "
-            "dbt run --profiles-dir /opt/airflow/dbt/weather_dbt"
-        ),
+        bash_command=f'cd "{DBT_PROJECT_DIR}" && "{DBT_BIN}" run --profiles-dir "{DBT_PROJECT_DIR}"',
     )
 
     extract >> transform
