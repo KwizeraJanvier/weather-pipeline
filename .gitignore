@@ -2,9 +2,15 @@
 __pycache__/
 *.pyc
 .DS_Store
+.migration/
+
+# Unrelated Anaconda/Jupyter workspace that lands here when Jupyter is
+# launched from this directory - not part of this project.
+anaconda_projects/
 
 # Python virtualenv
 .venv/
+.env
 
 # Airflow local runtime (metadata db, logs, webserver config)
 airflow_home/

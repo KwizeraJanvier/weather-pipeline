@@ -11,6 +11,14 @@ from config import CITIES, DAYS_BACK
 
 ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
 
+# trust_env=False stops requests from checking the OS for proxy settings on
+# every call. On macOS that check (via _scproxy/cfprefsd) can hang forever
+# when run from a subprocess spawned by Airflow, pegging a CPU core
+# indefinitely instead of erroring out - this project has no proxy to honor
+# anyway, so skip the lookup entirely.
+SESSION = requests.Session()
+SESSION.trust_env = False
+
 
 def get_connection():
     return psycopg2.connect(
@@ -26,7 +34,7 @@ def fetch_city_weather(lat: float, lon: float, days_back: int) -> list[dict]:
     end = date.today() - timedelta(days=1)
     start = end - timedelta(days=days_back)
 
-    response = requests.get(
+    response = SESSION.get(
         ARCHIVE_URL,
         params={
             "latitude": lat,
