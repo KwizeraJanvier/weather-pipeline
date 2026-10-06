@@ -321,6 +321,36 @@ CPU for more than a few seconds (`ps aux | grep extract_weather`), `kill -9`
 the stuck PID(s). Send any new HTTP calls you add to the project through a
 session set up the same way.
 
+### Postgres connections can also hang forever (same root cause, different call)
+
+The exact same `cfprefsd` flakiness above can also strike `psycopg2.connect()`:
+`libpq` probes for a GSSAPI/Kerberos credential cache before every connection
+(even though this project never uses Kerberos), and that probe routes
+through the same unreliable macOS service and can hang forever.
+
+**Partial fix:** every `psycopg2.connect()` call passes `gssencmode="disable"`
+to skip that probe. This helps but isn't 100% reliable on its own - the hang
+is intermittent, not deterministic.
+
+**The real fix:** a `signal.alarm()`-based timeout does **not** work here.
+The hang happens inside a macOS Mach IPC call that doesn't yield back to
+Python between instructions, so the alarm never fires - confirmed by testing
+it directly. The only thing that reliably stops a hung connection is
+`SIGKILL` sent from *outside* the process. So `extraction/fetch_weather.py`
+and `forecast/forecast_weather.py` both run their real work in a
+`multiprocessing.Process` with a wall-clock budget (`RUN_TIMEOUT_SECONDS`,
+120s); if it doesn't finish in time, the parent kills the subprocess outright
+and raises, so Airflow fails the task and retries instead of blocking the
+pipeline for hours. `dbt_run` doesn't need this treatment - it's a
+`BashOperator`, so Airflow's own `execution_timeout` (5 minutes, set in
+`default_args`) is monitored from a *different* process than the one that
+could hang, which stays responsive to normal signals.
+
+If a scheduled run ever sits in "running" for hours with no data showing up,
+check `ps aux | grep "tasks run"` for a stuck process before assuming
+anything else is wrong - this class of bug has now shown up in three
+unrelated call sites (`requests`, `libpq`, likely not the last).
+
 ## Stopping / resetting
 
 ```bash

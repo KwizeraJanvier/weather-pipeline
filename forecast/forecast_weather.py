@@ -6,6 +6,7 @@ This is deliberately simple (a straight-line fit, not a real ML model) - it's
 meant to give Metabase something to chart alongside the actuals, not to be
 an accurate weather forecaster.
 """
+import multiprocessing
 import os
 from datetime import date, timedelta
 
@@ -14,6 +15,7 @@ import psycopg2
 
 LOOKBACK_DAYS = 30
 FORECAST_DAYS = 7
+RUN_TIMEOUT_SECONDS = 120
 
 
 def get_connection():
@@ -23,6 +25,12 @@ def get_connection():
         dbname=os.environ.get("WAREHOUSE_DB_NAME", "warehouse"),
         user=os.environ.get("WAREHOUSE_DB_USER", "warehouse"),
         password=os.environ.get("WAREHOUSE_DB_PASSWORD", "warehouse"),
+        # We never use Kerberos/GSSAPI auth, but libpq probes for a GSS
+        # credential cache before every connection unless told not to. On
+        # this macOS version that probe can hang forever (same cfprefsd
+        # flakiness as the requests proxy-lookup hang above), pegging a CPU
+        # core indefinitely instead of erroring out. Skip the probe entirely.
+        gssencmode="disable",
     )
 
 
@@ -92,7 +100,7 @@ def upsert_forecast(conn, city: str, predictions: list[dict]) -> None:
     conn.commit()
 
 
-def run() -> None:
+def _run_impl() -> None:
     conn = get_connection()
     try:
         for city in fetch_cities(conn):
@@ -105,6 +113,28 @@ def run() -> None:
             print(f"{city}: wrote {len(predictions)} forecast rows")
     finally:
         conn.close()
+
+
+def run() -> None:
+    """Run forecasting in a subprocess with a hard wall-clock budget.
+
+    See extraction/fetch_weather.py's run() for why: macOS's cfprefsd can
+    hang forever on certain system calls in a way signal.alarm can't
+    interrupt. A subprocess can be SIGKILL'd from outside, which reliably
+    works where in-process timeouts don't.
+    """
+    proc = multiprocessing.Process(target=_run_impl)
+    proc.start()
+    proc.join(RUN_TIMEOUT_SECONDS)
+    if proc.is_alive():
+        proc.kill()
+        proc.join()
+        raise TimeoutError(
+            f"forecast hung for over {RUN_TIMEOUT_SECONDS}s (likely the macOS "
+            "cfprefsd hang - see README) and was killed; Airflow should retry"
+        )
+    if proc.exitcode != 0:
+        raise RuntimeError(f"forecast subprocess failed with exit code {proc.exitcode}")
 
 
 if __name__ == "__main__":
