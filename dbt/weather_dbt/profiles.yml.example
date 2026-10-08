@@ -10,5 +10,6 @@ weather_dbt:
       user: "{{ env_var('WAREHOUSE_DB_USER', 'warehouse') }}"
       password: "{{ env_var('WAREHOUSE_DB_PASSWORD', 'warehouse') }}"
       dbname: "{{ env_var('WAREHOUSE_DB_NAME', 'warehouse') }}"
+      sslmode: "{{ env_var('WAREHOUSE_DB_SSLMODE', 'prefer') }}"
       schema: staging
       threads: 4

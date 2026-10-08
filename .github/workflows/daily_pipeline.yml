@@ -1,0 +1,50 @@
+name: Daily weather pipeline
+
+# Runs the same three steps the local Airflow DAG used to (extract >> dbt
+# run >> forecast), but from GitHub's runners instead of a local machine -
+# the author's network blocks outbound Postgres (port 5432) entirely, which
+# would otherwise make this undeployable from their Mac.
+on:
+  schedule:
+    - cron: "0 6 * * *" # 06:00 UTC daily
+  workflow_dispatch:
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    env:
+      WAREHOUSE_DB_HOST: ${{ secrets.NEON_HOST }}
+      WAREHOUSE_DB_PORT: "5432"
+      WAREHOUSE_DB_NAME: ${{ secrets.NEON_DBNAME }}
+      WAREHOUSE_DB_USER: ${{ secrets.NEON_USER }}
+      WAREHOUSE_DB_PASSWORD: ${{ secrets.NEON_PASSWORD }}
+      WAREHOUSE_DB_SSLMODE: require
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install extraction + forecast dependencies
+        run: |
+          pip install -r extraction/requirements.txt
+          pip install -r forecast/requirements.txt
+
+      - name: Install dbt
+        run: pip install "dbt-core==1.8.*" "dbt-postgres==1.8.*"
+
+      - name: Extract weather data
+        working-directory: extraction
+        run: python fetch_weather.py
+
+      - name: Set up dbt profile
+        run: cp dbt/weather_dbt/profiles.yml.example dbt/weather_dbt/profiles.yml
+
+      - name: Run dbt
+        working-directory: dbt/weather_dbt
+        run: dbt run --profiles-dir .
+
+      - name: Generate forecast
+        working-directory: forecast
+        run: python forecast_weather.py
