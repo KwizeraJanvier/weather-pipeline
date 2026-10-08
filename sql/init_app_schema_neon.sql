@@ -27,10 +27,15 @@ CREATE TABLE IF NOT EXISTS app.audit_log (
 -- if this statement errors, see the "Neon: if CREATE ROLE fails" note in
 -- the README - the app falls back to running admin queries inside an
 -- explicit read-only transaction on the main role instead.
+--
+-- Re-running this (e.g. after rotating the password secret) updates the
+-- password on the existing role rather than erroring on "already exists".
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'app_readonly') THEN
         CREATE ROLE app_readonly LOGIN PASSWORD :'app_readonly_password';
+    ELSE
+        ALTER ROLE app_readonly PASSWORD :'app_readonly_password';
     END IF;
 END
 $$;

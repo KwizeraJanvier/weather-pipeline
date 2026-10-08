@@ -11,9 +11,13 @@ def _connect(user: str, password: str):
         dbname=os.environ.get("WAREHOUSE_DB_NAME", "warehouse"),
         user=user,
         password=password,
+        # 'prefer' (the libpq default) is fine for local Postgres; Neon (and
+        # most hosted Postgres) requires SSL, so set WAREHOUSE_DB_SSLMODE=require
+        # when pointed at a cloud database.
+        sslmode=os.environ.get("WAREHOUSE_DB_SSLMODE", "prefer"),
         # See extraction/fetch_weather.py - libpq's GSSAPI credential probe
         # can hang forever on this macOS version. We don't use Kerberos, so
-        # disable the probe entirely.
+        # disable the probe entirely. Harmless on other platforms.
         gssencmode="disable",
     )
 
