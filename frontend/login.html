@@ -14,7 +14,10 @@
     <input type="email" id="email" required autocomplete="email" />
 
     <label for="password">Password</label>
-    <input type="password" id="password" required autocomplete="current-password" minlength="8" />
+    <div class="password-field">
+      <input type="password" id="password" required autocomplete="current-password" minlength="8" />
+      <button type="button" id="toggle-password" aria-label="Show password">Show</button>
+    </div>
 
     <button type="submit" id="submit-btn">Sign in</button>
     <p class="error" id="auth-error"></p>

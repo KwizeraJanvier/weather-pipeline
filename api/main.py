@@ -9,8 +9,10 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 import pipeline
+from audit import log_action, recent_entries
 from auth import create_user, get_current_user, get_user_by_email, require_admin, verify_password
 from db import query
+from metabase_embed import get_embed_url
 from sql_runner import run_query
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
@@ -60,6 +62,7 @@ def signup(body: SignupBody, request: Request):
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
     user = create_user(body.email, body.password)
     request.session["user_id"] = user["id"]
+    log_action(user["email"], "signup", user_id=user["id"], detail=f"role={user['role']}")
     return {"email": user["email"], "role": user["role"]}
 
 
@@ -67,13 +70,16 @@ def signup(body: SignupBody, request: Request):
 def login(body: LoginBody, request: Request):
     user = get_user_by_email(body.email)
     if not user or not verify_password(body.password, user["password_hash"]):
+        log_action(body.email, "login_failed")
         raise HTTPException(status_code=401, detail="Invalid email or password")
     request.session["user_id"] = user["id"]
+    log_action(user["email"], "login_success", user_id=user["id"])
     return {"email": user["email"], "role": user["role"]}
 
 
 @app.post("/api/auth/logout")
-def logout(request: Request):
+def logout(request: Request, user: dict = Depends(get_current_user)):
+    log_action(user["email"], "logout", user_id=user["id"])
     request.session.clear()
     return {"ok": True}
 
@@ -146,6 +152,11 @@ def rain_stats(user: dict = Depends(get_current_user)):
     )
 
 
+@app.get("/api/metabase/embed-url")
+def metabase_embed_url(user: dict = Depends(get_current_user)):
+    return {"url": get_embed_url()}
+
+
 # ---- Database page (admin only - runs arbitrary SELECTs) ------------------
 
 
@@ -163,7 +174,21 @@ def list_tables(user: dict = Depends(require_admin)):
 
 @app.post("/api/db/query")
 def db_query(body: QueryBody, user: dict = Depends(require_admin)):
-    return run_query(body.sql)
+    try:
+        result = run_query(body.sql)
+    except HTTPException as exc:
+        log_action(user["email"], "sql_query_blocked", user_id=user["id"], detail=f"{body.sql} -- {exc.detail}")
+        raise
+    log_action(user["email"], "sql_query", user_id=user["id"], detail=body.sql)
+    return result
+
+
+# ---- Audit log (admin only) ------------------------------------------------
+
+
+@app.get("/api/audit/log")
+def audit_log(user: dict = Depends(require_admin)):
+    return recent_entries()
 
 
 # ---- Pipeline status page --------------------------------------------------

@@ -19,6 +19,7 @@ async function initShell() {
   document.getElementById("user-email").textContent = currentUser.email;
   if (currentUser.role === "admin") {
     document.getElementById("nav-database").hidden = false;
+    document.getElementById("nav-audit").hidden = false;
   }
 
   document.getElementById("logout-btn").addEventListener("click", async () => {
@@ -36,6 +37,8 @@ function showSection(name) {
   document.querySelectorAll(".nav-link").forEach((b) => b.classList.toggle("active", b.dataset.section === name));
   if (name === "database" && !tablesLoaded) loadTables();
   if (name === "pipeline" && !runsLoaded) loadRuns();
+  if (name === "metabase" && !metabaseLoaded) loadMetabase();
+  if (name === "audit") loadAuditLog();
 }
 
 // ---- Dashboard ---------------------------------------------------------
@@ -99,6 +102,54 @@ async function initDashboard() {
   const select = document.getElementById("city-select");
   if (select.options.length) await loadCityChart(select.value);
   select.addEventListener("change", () => loadCityChart(select.value));
+  startAutoRefresh();
+}
+
+// The pipeline updates once a day, so there's nothing to gain from
+// WebSockets/true streaming - this just polls often enough that new data
+// shows up without a manual reload, and pauses while the tab isn't visible
+// so it's not doing pointless work in a background tab.
+const REFRESH_INTERVAL_MS = 60_000;
+let refreshTimer = null;
+
+function startAutoRefresh() {
+  stopAutoRefresh();
+  refreshTimer = setInterval(refreshDashboard, REFRESH_INTERVAL_MS);
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) stopAutoRefresh();
+    else startAutoRefresh();
+  });
+}
+
+function stopAutoRefresh() {
+  if (refreshTimer) clearInterval(refreshTimer);
+  refreshTimer = null;
+}
+
+async function refreshDashboard() {
+  const select = document.getElementById("city-select");
+  await Promise.all([loadRainStats(), select.options.length ? loadCityChart(select.value) : Promise.resolve()]);
+  const indicator = document.getElementById("live-indicator");
+  indicator.title = `Last updated ${new Date().toLocaleTimeString()}`;
+}
+
+// ---- Metabase (embedded dashboard) --------------------------------------
+
+let metabaseLoaded = false;
+
+async function loadMetabase() {
+  metabaseLoaded = true;
+  const status = document.getElementById("metabase-status");
+  const frame = document.getElementById("metabase-frame");
+  try {
+    const { url } = await fetchJSON("/api/metabase/embed-url");
+    frame.src = url;
+    frame.hidden = false;
+    status.hidden = true;
+  } catch (err) {
+    metabaseLoaded = false; // allow retry once it's configured
+    status.textContent = err.message;
+  }
 }
 
 // ---- Database (admin only) ---------------------------------------------
@@ -188,6 +239,23 @@ async function loadTasks(runId) {
         <td><span class="pill pill-${t.state}">${t.state ?? "pending"}</span></td>
         <td>${fmtTime(t.start_date)}</td>
         <td>${fmtTime(t.end_date)}</td>
+      </tr>`
+    )
+    .join("");
+}
+
+// ---- Audit log (admin only) ----------------------------------------------
+
+async function loadAuditLog() {
+  const entries = await fetchJSON("/api/audit/log");
+  document.querySelector("#audit-table tbody").innerHTML = entries
+    .map(
+      (e) => `
+      <tr>
+        <td>${fmtTime(e.created_at)}</td>
+        <td>${e.email}</td>
+        <td><span class="pill pill-${e.action.includes("fail") || e.action.includes("block") ? "failed" : "success"}">${e.action}</span></td>
+        <td class="audit-detail">${e.detail ?? ""}</td>
       </tr>`
     )
     .join("");

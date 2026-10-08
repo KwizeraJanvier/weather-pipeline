@@ -12,8 +12,10 @@
     <nav class="sidebar">
       <div class="brand">Weather Pipeline</div>
       <button class="nav-link active" data-section="dashboard">Dashboard</button>
+      <button class="nav-link" data-section="metabase">Metabase</button>
       <button class="nav-link" data-section="database" id="nav-database" hidden>Database</button>
       <button class="nav-link" data-section="pipeline">Data Pipeline</button>
+      <button class="nav-link" data-section="audit" id="nav-audit" hidden>Audit Log</button>
       <div class="sidebar-footer">
         <div class="user-email" id="user-email"></div>
         <button class="link-btn" id="logout-btn">Log out</button>
@@ -28,6 +30,7 @@
             <label for="city-select">City</label>
             <select id="city-select"></select>
             <span class="status" id="chart-status"></span>
+            <span class="live-indicator" id="live-indicator">&#9679; Live</span>
           </div>
           <canvas id="temp-chart" height="110"></canvas>
         </div>
@@ -46,6 +49,14 @@
             </thead>
             <tbody></tbody>
           </table>
+        </div>
+      </section>
+
+      <section id="section-metabase" class="section" hidden>
+        <div class="card metabase-card">
+          <h2>Metabase dashboard</h2>
+          <p class="muted" id="metabase-status">Loading...</p>
+          <iframe id="metabase-frame" class="metabase-frame" hidden></iframe>
         </div>
       </section>
 
@@ -100,6 +111,26 @@
             </thead>
             <tbody></tbody>
           </table>
+        </div>
+      </section>
+
+      <section id="section-audit" class="section" hidden>
+        <div class="card">
+          <h2>Audit log</h2>
+          <p class="muted">Signups, logins, logouts, and every query run through the Database tool (including blocked ones).</p>
+          <div class="table-scroll">
+            <table id="audit-table">
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>User</th>
+                  <th>Action</th>
+                  <th>Detail</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
         </div>
       </section>
     </main>

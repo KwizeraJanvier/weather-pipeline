@@ -11,6 +11,28 @@ CREATE TABLE IF NOT EXISTS app.users (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Security-relevant events: signups, logins (success and failure), logouts,
+-- and every SQL query run through the admin query tool (including ones
+-- blocked by the SELECT-only check - a pattern of blocked attempts is
+-- itself a signal worth seeing). user_id is nullable because a failed
+-- login attempt may not correspond to a real user.
+CREATE TABLE IF NOT EXISTS app.audit_log (
+    id SERIAL PRIMARY KEY,
+    user_id INT REFERENCES app.users(id),
+    email TEXT NOT NULL,
+    action TEXT NOT NULL,
+    detail TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- This file gets run as the Postgres superuser (needed for CREATE ROLE
+-- below), which would otherwise leave these tables owned by the superuser
+-- instead of `warehouse` - the role the app itself connects as. Grant
+-- explicitly so it doesn't matter which role actually ran this script.
+GRANT ALL ON SCHEMA app TO warehouse;
+GRANT ALL ON ALL TABLES IN SCHEMA app TO warehouse;
+GRANT ALL ON ALL SEQUENCES IN SCHEMA app TO warehouse;
+
 -- A dedicated, genuinely read-only Postgres role for the "run custom SQL"
 -- feature in the web app. The app's custom-query endpoint ALWAYS connects
 -- as this role, never as the main `warehouse` user - so even if a query

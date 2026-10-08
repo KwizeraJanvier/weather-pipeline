@@ -1,4 +1,14 @@
 const form = document.getElementById("auth-form");
+const passwordInput = document.getElementById("password");
+const togglePasswordBtn = document.getElementById("toggle-password");
+
+togglePasswordBtn.addEventListener("click", () => {
+  const showing = passwordInput.type === "text";
+  passwordInput.type = showing ? "password" : "text";
+  togglePasswordBtn.textContent = showing ? "Show" : "Hide";
+  togglePasswordBtn.setAttribute("aria-label", showing ? "Show password" : "Hide password");
+});
+
 const submitBtn = document.getElementById("submit-btn");
 const errorEl = document.getElementById("auth-error");
 const subtitle = document.getElementById("auth-subtitle");

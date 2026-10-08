@@ -79,17 +79,20 @@ Airflow DAG "weather_pipeline" (@daily):
 │       └── marts/                     # fct_daily_weather (table)
 ├── sql/
 │   ├── init_warehouse_schemas.sql     # creates schemas + raw/forecast tables
-│   └── init_app_schema.sql            # app.users table + app_readonly role
+│   └── init_app_schema.sql            # app.users/audit_log + app_readonly role
 ├── api/
 │   ├── main.py                        # FastAPI app: /api/* + serves frontend/
 │   ├── auth.py                        # bcrypt hashing, sessions, role checks
+│   ├── audit.py                       # writes/reads app.audit_log
 │   ├── db.py                          # psycopg2 connection helpers
 │   ├── sql_runner.py                  # validates + runs admin SQL queries
 │   ├── pipeline.py                    # reads Airflow's own SQLite metadata
+│   ├── metabase_embed.py              # signs Metabase static-embed JWTs
 │   └── requirements.txt
 ├── frontend/
-│   ├── login.html / login.js          # signup + login form
-│   ├── index.html                     # app shell: Dashboard/Database/Pipeline
+│   ├── login.html / login.js          # signup + login form, show/hide password
+│   ├── index.html                     # app shell: Dashboard/Metabase/Database/
+│   │                                   #   Pipeline/Audit Log
 │   ├── app.js                         # calls /api/*, renders with Chart.js
 │   └── style.css
 ├── .env.example                       # optional DB connection overrides
@@ -147,18 +150,33 @@ Not tracked by git: `.venv/`, `airflow_home/`, `metabase/`, and
 
 - A FastAPI app, gated behind a login (`app.users`, bcrypt-hashed passwords,
   signed-cookie sessions), with JSON endpoints under `/api/*` for the
-  dashboard (cities, actuals, forecast, rain stats - any logged-in user),
-  the database tool (admin only - see "Security model" above), and pipeline
-  status (any logged-in user, reads Airflow's own SQLite file directly).
+  dashboard (cities, actuals, forecast, rain stats - any logged-in user, and
+  auto-refreshed every 60s - see "Why not real-time streaming" below), an
+  embedded Metabase dashboard (any logged-in user, via a signed JWT so it
+  stays behind this app's login rather than a public link), the database
+  tool (admin only - see "Security model" below), pipeline status (any
+  logged-in user, reads Airflow's own SQLite file directly), and the audit
+  log (admin only).
 - `StaticFiles` mounted at `/` serves `frontend/`'s plain HTML/CSS/JS
   directly from the same process, so the API and UI are one app, one port,
   no CORS configuration needed.
 - The frontend has no build step - it's loaded as-is by the browser, with
   Chart.js pulled from a CDN `<script>` tag. `login.html`/`login.js` handle
-  signup/login; `index.html`/`app.js` are the post-login app shell with its
-  three sidebar sections.
+  signup/login (with a show/hide toggle on the password field); `index.html`/
+  `app.js` are the post-login app shell with its five sidebar sections.
 - This is a separate, independent consumer of the warehouse - it doesn't
   participate in the DAG and has no effect on Metabase or vice versa.
+
+#### Why not real-time streaming
+
+The pipeline updates `marts.*` once a day. A dashboard that polls every 60
+seconds (what this does) shows new data within a minute of it landing -
+indistinguishable in practice from true streaming, for data that only
+changes once every 24 hours. WebSockets/server-sent events would add real
+complexity (a persistent connection, reconnect handling, a reason for the
+backend to push instead of the client asking) to solve a latency problem
+that doesn't exist here. Same reasoning as the Kafka question elsewhere in
+this project - match the tool to the actual shape of the data.
 
 ## Warehouse data model
 
@@ -344,26 +362,58 @@ There's no UI to promote a user later - do it by hand if needed:
 UPDATE app.users SET role = 'admin' WHERE email = '...';
 ```
 
-Once logged in, the sidebar has three sections:
+Once logged in, the sidebar has five sections:
 
-- **Dashboard** (any logged-in user) - the same actual-vs-forecast chart and
-  rain-analysis table as before, pick a city from the dropdown.
+- **Dashboard** (any logged-in user) - the actual-vs-forecast chart and
+  rain-analysis table, auto-refreshing every 60s (pauses while the browser
+  tab isn't visible). Pick a city from the dropdown.
+- **Metabase** (any logged-in user) - the Metabase dashboard, embedded via
+  a signed JWT (not a public link - see "Embedding Metabase" below for the
+  one-time setup this needs). Shows a plain error message until configured.
 - **Database** (admin only) - a text box to run read-only SQL directly
   against the warehouse. See "Security model" below for how this is kept
   safe even though it accepts arbitrary queries.
 - **Data Pipeline** (any logged-in user) - recent Airflow DAG runs and, for
   whichever run you click, its three tasks and their states. Read-only -
   reads Airflow's own SQLite metadata DB directly, no Airflow API needed.
+- **Audit Log** (admin only) - every signup, login (success and failure),
+  logout, and SQL query run through the Database tool (including ones the
+  SELECT-only check blocked), newest first.
 
 FastAPI serves both the JSON API (under `/api/*`) and the static frontend
 from the same process, so there's nothing else to run and no CORS setup
 needed.
 
+#### Embedding Metabase
+
+This needs a couple of one-time clicks in Metabase itself (can't be done
+with page automation - it needs your Metabase login):
+
+1. In Metabase: **Admin settings → Embedding** → enable embedding → copy
+   the **embedding secret key**.
+2. Open the dashboard you want embedded, open its URL - the number at the
+   end is its **dashboard ID** (e.g. `localhost:3000/dashboard/2` → `2`).
+3. On that dashboard, **Share → Embed this dashboard → Publish**.
+4. Set both before starting the web app:
+   ```bash
+   export METABASE_EMBED_SECRET=<the secret key from step 1>
+   export METABASE_DASHBOARD_ID=<the id from step 2>
+   ```
+
+Until these are set, the Metabase section just shows a message saying so -
+nothing breaks. This is deliberately **static (signed) embedding, not a
+public link**: the JWT is only ever generated for a request that already
+passed this app's own login, so the Metabase dashboard stays behind the
+same auth as everything else here, instead of being reachable by anyone who
+has the URL.
+
 #### Security model
 
 - **Passwords** are hashed with `bcrypt`, never stored or logged in plain
-  text. Sessions are signed cookies (`SessionMiddleware`), not JWTs or
-  anything stored client-side beyond the cookie itself.
+  text, and the login/signup form has a show/hide toggle so you can check
+  what you typed without weakening how it's stored. Sessions are signed
+  cookies (`SessionMiddleware`), not JWTs or anything stored client-side
+  beyond the cookie itself.
 - **The SQL query tool never uses the app's own database credentials.** It
   connects as `app_readonly`, a Postgres role created in
   `sql/init_app_schema.sql` with `SELECT`-only grants on `raw`/`staging`/
@@ -378,10 +428,14 @@ needed.
   `api/auth.py`), not just by hiding the nav link in the frontend - a viewer
   calling `/api/db/query` directly gets a 403 regardless of what the UI
   shows them.
+- **Every security-relevant action is written to `app.audit_log`** (see
+  `api/audit.py`) - signups, logins (success and failure), logouts, and
+  every SQL query run through the Database tool, including ones that got
+  blocked. Visible on the Audit Log page (admin only).
 
 API endpoints, if you want to poke at them directly or build more frontend
 on top (all except `/api/auth/*` and `/api/health` require a logged-in
-session; `/api/db/*` additionally requires the admin role):
+session; `/api/db/*` and `/api/audit/*` additionally require the admin role):
 
 | Endpoint                              | Returns                                              |
 |----------------------------------------|-------------------------------------------------------|
@@ -393,10 +447,12 @@ session; `/api/db/*` additionally requires the admin role):
 | `GET /api/weather/{city}`              | last `days` (default 30) of actuals for a city       |
 | `GET /api/forecast/{city}`             | current forward-looking forecast (not past ones)     |
 | `GET /api/rain-stats`                  | rain-day % and avg temp (rain vs. no-rain) per city  |
+| `GET /api/metabase/embed-url`          | a signed, short-lived embed URL for the dashboard    |
 | `GET /api/db/tables`                   | schema.table names in raw/staging/marts (admin)      |
 | `POST /api/db/query`                   | run a read-only SQL query (admin)                    |
 | `GET /api/pipeline/runs`               | last 10 DAG runs                                     |
 | `GET /api/pipeline/runs/{id}/tasks`    | task states for one run                              |
+| `GET /api/audit/log`                   | last 100 audit log entries (admin)                   |
 | `GET /api/health`                      | `{"status": "ok"}` if the DB connection works        |
 
 ## Running steps manually (outside Airflow)
