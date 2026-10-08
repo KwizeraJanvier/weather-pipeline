@@ -216,29 +216,51 @@ is only needed if you want to override them.
 brew services list   # should show postgresql@16 as "started"
 ```
 
-### 2. Run Airflow (webserver + scheduler in one process).
+### 2. Airflow runs as a background service - you shouldn't need to start it
+
+Airflow (`webserver` + `scheduler` + `triggerer`, via `standalone`) runs as a
+macOS `launchd` service, `com.weatherpipeline.airflow`, so the daily schedule
+keeps firing without a terminal window open. It starts automatically at
+login and restarts itself if it crashes.
 
 ```bash
-cd "/Users/janvier/Data Engineer Project"
-source .venv/bin/activate
-export AIRFLOW_HOME="$(pwd)/airflow_home"
-airflow standalone
+launchctl list | grep weatherpipeline   # confirm it's running
 ```
 
-Activate the venv instead of calling `.venv/bin/airflow` directly.
-`standalone` starts `airflow webserver`/`scheduler`/`triggerer` as
-subprocesses that look for `airflow` on `PATH`, and that only works once the
-venv is activated.
-
 Open [localhost:8080](http://localhost:8080) and log in with
-`admin` / `admin123`. Unpause `weather_pipeline` and trigger it manually to
-run it now (it's also scheduled `@daily`). Leave Airflow running in its own
-terminal tab.
+`admin` / `admin123`. Unpause `weather_pipeline` if needed.
 
 > `standalone` auto-generates a random admin password the *first* time it
 > creates that user, and prints it only once. If you get "Invalid login",
 > reset it:
 > `airflow users reset-password --username admin --password admin123`
+
+**Do not run `airflow standalone` manually in a terminal** - that creates a
+second instance fighting the service for the same database and port 8080,
+which is what caused repeated "scheduler not running" / stale data problems
+before this was turned into a proper service. If you ever need to restart it
+intentionally:
+
+```bash
+launchctl kickstart -k gui/$(id -u)/com.weatherpipeline.airflow
+```
+
+To stop it (note: plain `stop` just gets restarted by `KeepAlive` - use
+`bootout` to actually turn it off, `bootstrap` to turn it back on):
+
+```bash
+launchctl bootout gui/$(id -u)/com.weatherpipeline.airflow
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.weatherpipeline.airflow.plist
+```
+
+The service definition lives at
+`~/Library/LaunchAgents/com.weatherpipeline.airflow.plist`; its logs are in
+`airflow_home/service_logs/`.
+
+If the webserver ever seems unreachable while `launchctl list` shows the
+service running: check for a stale `airflow_home/airflow-webserver.pid` left
+over from a force-killed previous instance (same root cause as the Postgres
+`postmaster.pid` issue above) - delete it and `kickstart -k` again.
 
 ### 3. Run Metabase
 
