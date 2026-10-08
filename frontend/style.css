@@ -323,12 +323,15 @@ button#run-query-btn {
   color: #1f8a3c;
 }
 
-.pill-failed {
+.pill-failed,
+.pill-failure {
   background: #fbe7e6;
   color: #c62d27;
 }
 
-.pill-running {
+.pill-running,
+.pill-in_progress,
+.pill-queued {
   background: #e7f0fe;
   color: var(--accent);
 }
