@@ -1,0 +1,46 @@
+name: One-time Neon setup
+
+# Manually triggered only - this applies schema/role setup, not something
+# that should run on every push. Exists because the author's local network
+# blocks outbound Postgres (port 5432) entirely, so this has to run from
+# GitHub's runners instead of a local machine.
+on:
+  workflow_dispatch:
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    env:
+      PGHOST: ${{ secrets.NEON_HOST }}
+      PGUSER: ${{ secrets.NEON_USER }}
+      PGPASSWORD: ${{ secrets.NEON_PASSWORD }}
+      PGDATABASE: ${{ secrets.NEON_DBNAME }}
+      PGSSLMODE: require
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Confirm psql is available
+        run: psql --version
+
+      - name: Test connectivity
+        run: psql -c "select version();"
+
+      - name: Check whether this role can CREATE ROLE
+        run: |
+          psql -tAc "select rolcreaterole, rolsuper from pg_roles where rolname = current_user;"
+
+      - name: Apply warehouse schema (raw/staging/marts)
+        run: psql -f sql/init_warehouse_schemas.sql
+
+      - name: Apply app schema (users/audit_log) + app_readonly role
+        run: |
+          psql -v app_readonly_password="${{ secrets.APP_READONLY_DB_PASSWORD }}" \
+               -f sql/init_app_schema_neon.sql
+
+      - name: Verify
+        run: |
+          psql -c "\dn"
+          psql -c "\dt raw.*"
+          psql -c "\dt staging.*"
+          psql -c "\dt marts.*"
+          psql -c "\dt app.*"
