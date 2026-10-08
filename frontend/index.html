@@ -7,39 +7,103 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 </head>
-<body>
-  <header>
-    <h1>Weather Pipeline Dashboard</h1>
-    <p>Reads live from the same warehouse the Airflow pipeline updates daily.</p>
-  </header>
-
-  <main>
-    <section class="card">
-      <h2>Actual vs. forecast temperature</h2>
-      <div class="controls">
-        <label for="city-select">City</label>
-        <select id="city-select"></select>
-        <span class="status" id="chart-status"></span>
+<body class="app-body">
+  <div class="app-shell">
+    <nav class="sidebar">
+      <div class="brand">Weather Pipeline</div>
+      <button class="nav-link active" data-section="dashboard">Dashboard</button>
+      <button class="nav-link" data-section="database" id="nav-database" hidden>Database</button>
+      <button class="nav-link" data-section="pipeline">Data Pipeline</button>
+      <div class="sidebar-footer">
+        <div class="user-email" id="user-email"></div>
+        <button class="link-btn" id="logout-btn">Log out</button>
       </div>
-      <canvas id="temp-chart" height="110"></canvas>
-    </section>
+    </nav>
 
-    <section class="card">
-      <h2>Rain analysis by city</h2>
-      <table id="rain-table">
-        <thead>
-          <tr>
-            <th>City</th>
-            <th>Rain days</th>
-            <th>% of days</th>
-            <th>Avg max temp (rain)</th>
-            <th>Avg max temp (no rain)</th>
-          </tr>
-        </thead>
-        <tbody></tbody>
-      </table>
-    </section>
-  </main>
+    <main>
+      <section id="section-dashboard" class="section">
+        <div class="card">
+          <h2>Actual vs. forecast temperature</h2>
+          <div class="controls">
+            <label for="city-select">City</label>
+            <select id="city-select"></select>
+            <span class="status" id="chart-status"></span>
+          </div>
+          <canvas id="temp-chart" height="110"></canvas>
+        </div>
+
+        <div class="card">
+          <h2>Rain analysis by city</h2>
+          <table id="rain-table">
+            <thead>
+              <tr>
+                <th>City</th>
+                <th>Rain days</th>
+                <th>% of days</th>
+                <th>Avg max temp (rain)</th>
+                <th>Avg max temp (no rain)</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="section-database" class="section" hidden>
+        <div class="card">
+          <h2>Run a query</h2>
+          <p class="muted">
+            Read-only - runs as a restricted database role that can only
+            <code>SELECT</code> from <code>raw</code>, <code>staging</code>,
+            and <code>marts</code>.
+          </p>
+          <div class="controls" style="margin-bottom: 8px">
+            <select id="table-picker"></select>
+          </div>
+          <textarea id="sql-box" rows="4" placeholder="select * from marts.fct_daily_weather order by date desc limit 20"></textarea>
+          <div class="controls">
+            <button id="run-query-btn">Run query</button>
+            <span class="status" id="query-status"></span>
+          </div>
+          <div class="table-scroll">
+            <table id="query-result-table"></table>
+          </div>
+        </div>
+      </section>
+
+      <section id="section-pipeline" class="section" hidden>
+        <div class="card">
+          <h2>Recent pipeline runs</h2>
+          <table id="runs-table">
+            <thead>
+              <tr>
+                <th>Run</th>
+                <th>Type</th>
+                <th>State</th>
+                <th>Started</th>
+                <th>Ended</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div class="card">
+          <h2>Tasks for selected run</h2>
+          <table id="tasks-table">
+            <thead>
+              <tr>
+                <th>Task</th>
+                <th>State</th>
+                <th>Started</th>
+                <th>Ended</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
 
   <script src="app.js"></script>
 </body>

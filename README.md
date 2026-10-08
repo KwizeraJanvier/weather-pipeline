@@ -78,13 +78,18 @@ Airflow DAG "weather_pipeline" (@daily):
 │       ├── staging/                   # stg_weather (view) + source + tests
 │       └── marts/                     # fct_daily_weather (table)
 ├── sql/
-│   └── init_warehouse_schemas.sql     # creates schemas + raw/forecast tables
+│   ├── init_warehouse_schemas.sql     # creates schemas + raw/forecast tables
+│   └── init_app_schema.sql            # app.users table + app_readonly role
 ├── api/
 │   ├── main.py                        # FastAPI app: /api/* + serves frontend/
-│   ├── db.py                          # psycopg2 connection helper
+│   ├── auth.py                        # bcrypt hashing, sessions, role checks
+│   ├── db.py                          # psycopg2 connection helpers
+│   ├── sql_runner.py                  # validates + runs admin SQL queries
+│   ├── pipeline.py                    # reads Airflow's own SQLite metadata
 │   └── requirements.txt
 ├── frontend/
-│   ├── index.html
+│   ├── login.html / login.js          # signup + login form
+│   ├── index.html                     # app shell: Dashboard/Database/Pipeline
 │   ├── app.js                         # calls /api/*, renders with Chart.js
 │   └── style.css
 ├── .env.example                       # optional DB connection overrides
@@ -140,15 +145,18 @@ Not tracked by git: `.venv/`, `airflow_home/`, `metabase/`, and
 
 ### 5. Web app — `api/main.py` + `frontend/`
 
-- A FastAPI app with four read-only JSON endpoints under `/api/*` (cities,
-  per-city actuals, per-city forecast, rain stats), each a thin wrapper
-  around a SQL query against the `marts` tables - no business logic lives
-  here beyond what the SQL expresses.
+- A FastAPI app, gated behind a login (`app.users`, bcrypt-hashed passwords,
+  signed-cookie sessions), with JSON endpoints under `/api/*` for the
+  dashboard (cities, actuals, forecast, rain stats - any logged-in user),
+  the database tool (admin only - see "Security model" above), and pipeline
+  status (any logged-in user, reads Airflow's own SQLite file directly).
 - `StaticFiles` mounted at `/` serves `frontend/`'s plain HTML/CSS/JS
   directly from the same process, so the API and UI are one app, one port,
   no CORS configuration needed.
 - The frontend has no build step - it's loaded as-is by the browser, with
-  Chart.js pulled from a CDN `<script>` tag.
+  Chart.js pulled from a CDN `<script>` tag. `login.html`/`login.js` handle
+  signup/login; `index.html`/`app.js` are the post-login app shell with its
+  three sidebar sections.
 - This is a separate, independent consumer of the warehouse - it doesn't
   participate in the DAG and has no effect on Metabase or vice versa.
 
@@ -175,6 +183,10 @@ psql -U "$(whoami)" -d postgres -c "CREATE ROLE warehouse LOGIN PASSWORD 'wareho
 psql -U "$(whoami)" -d postgres -c "CREATE DATABASE warehouse OWNER warehouse;"
 psql "postgresql://warehouse:warehouse@localhost:5432/warehouse" -f sql/init_warehouse_schemas.sql
 
+# App auth schema + the read-only role the web app's SQL tool runs as.
+# Needs CREATE ROLE, so run as the superuser ($(whoami)), not `warehouse`.
+psql -U "$(whoami)" -d warehouse -f sql/init_app_schema.sql
+
 # Project virtualenv with Airflow + dbt + extraction/forecast deps
 python3.12 -m venv .venv
 AIRFLOW_VERSION=2.9.3
@@ -183,6 +195,7 @@ CONSTRAINT_URL="https://raw.githubusercontent.com/apache/airflow/constraints-${A
 .venv/bin/pip install "apache-airflow==${AIRFLOW_VERSION}" --constraint "${CONSTRAINT_URL}" \
     "dbt-core==1.8.*" "dbt-postgres==1.8.*" "requests==2.32.3" "psycopg2-binary==2.9.9"
 .venv/bin/pip install -r forecast/requirements.txt   # numpy for the forecast step
+.venv/bin/pip install -r api/requirements.txt        # fastapi, bcrypt, etc. for the web app
 
 # dbt profile (local only, not committed)
 cp dbt/weather_dbt/profiles.yml.example dbt/weather_dbt/profiles.yml
@@ -319,25 +332,72 @@ Dashboard ideas:
 cd "/Users/janvier/Data Engineer Project/api"
 export WAREHOUSE_DB_HOST=localhost WAREHOUSE_DB_PORT=5432 WAREHOUSE_DB_NAME=warehouse \
        WAREHOUSE_DB_USER=warehouse WAREHOUSE_DB_PASSWORD=warehouse
+export APP_READONLY_DB_USER=app_readonly APP_READONLY_DB_PASSWORD=app_readonly
 ../.venv/bin/uvicorn main:app --port 8001
 ```
 
-Open [localhost:8001](http://localhost:8001) - FastAPI serves both the JSON
-API (under `/api/*`) and the static frontend from the same process, so
-there's nothing else to run and no CORS setup needed. Pick a city from the
-dropdown to see its actual-vs-forecast temperature chart; the rain-analysis
-table below it covers all cities at once.
+Open [localhost:8001](http://localhost:8001) - it redirects to a login page
+since every page and API route requires an account. **The first person to
+sign up becomes an admin automatically**; everyone after that is a "viewer."
+There's no UI to promote a user later - do it by hand if needed:
+```sql
+UPDATE app.users SET role = 'admin' WHERE email = '...';
+```
+
+Once logged in, the sidebar has three sections:
+
+- **Dashboard** (any logged-in user) - the same actual-vs-forecast chart and
+  rain-analysis table as before, pick a city from the dropdown.
+- **Database** (admin only) - a text box to run read-only SQL directly
+  against the warehouse. See "Security model" below for how this is kept
+  safe even though it accepts arbitrary queries.
+- **Data Pipeline** (any logged-in user) - recent Airflow DAG runs and, for
+  whichever run you click, its three tasks and their states. Read-only -
+  reads Airflow's own SQLite metadata DB directly, no Airflow API needed.
+
+FastAPI serves both the JSON API (under `/api/*`) and the static frontend
+from the same process, so there's nothing else to run and no CORS setup
+needed.
+
+#### Security model
+
+- **Passwords** are hashed with `bcrypt`, never stored or logged in plain
+  text. Sessions are signed cookies (`SessionMiddleware`), not JWTs or
+  anything stored client-side beyond the cookie itself.
+- **The SQL query tool never uses the app's own database credentials.** It
+  connects as `app_readonly`, a Postgres role created in
+  `sql/init_app_schema.sql` with `SELECT`-only grants on `raw`/`staging`/
+  `marts` and explicitly **no** access to the `app` schema (where password
+  hashes live) - so even a bug in the app's own query validation can't turn
+  into a write, and can never leak another user's credentials. This is
+  checked twice: once at the database level (real enforcement) and once in
+  `api/sql_runner.py` (keyword/shape check, for a clearer error message).
+  `app_readonly` also has a 5-second `statement_timeout` set, so a runaway
+  query can't hang the connection.
+- **Role checks** happen server-side on every request (`require_admin` in
+  `api/auth.py`), not just by hiding the nav link in the frontend - a viewer
+  calling `/api/db/query` directly gets a 403 regardless of what the UI
+  shows them.
 
 API endpoints, if you want to poke at them directly or build more frontend
-on top:
+on top (all except `/api/auth/*` and `/api/health` require a logged-in
+session; `/api/db/*` additionally requires the admin role):
 
-| Endpoint                  | Returns                                             |
-|----------------------------|------------------------------------------------------|
-| `GET /api/cities`          | list of tracked city names                           |
-| `GET /api/weather/{city}`  | last `days` (default 30) of actuals for a city       |
-| `GET /api/forecast/{city}` | current forward-looking forecast (not past ones)     |
-| `GET /api/rain-stats`      | rain-day % and avg temp (rain vs. no-rain) per city  |
-| `GET /api/health`          | `{"status": "ok"}` if the DB connection works        |
+| Endpoint                              | Returns                                              |
+|----------------------------------------|-------------------------------------------------------|
+| `POST /api/auth/signup`               | create an account, log in, `{email, role}`           |
+| `POST /api/auth/login`                | log in, `{email, role}`                              |
+| `POST /api/auth/logout`               | clear the session                                     |
+| `GET /api/auth/me`                    | the logged-in user, or 401                           |
+| `GET /api/cities`                      | list of tracked city names                           |
+| `GET /api/weather/{city}`              | last `days` (default 30) of actuals for a city       |
+| `GET /api/forecast/{city}`             | current forward-looking forecast (not past ones)     |
+| `GET /api/rain-stats`                  | rain-day % and avg temp (rain vs. no-rain) per city  |
+| `GET /api/db/tables`                   | schema.table names in raw/staging/marts (admin)      |
+| `POST /api/db/query`                   | run a read-only SQL query (admin)                    |
+| `GET /api/pipeline/runs`               | last 10 DAG runs                                     |
+| `GET /api/pipeline/runs/{id}/tasks`    | task states for one run                              |
+| `GET /api/health`                      | `{"status": "ok"}` if the DB connection works        |
 
 ## Running steps manually (outside Airflow)
 

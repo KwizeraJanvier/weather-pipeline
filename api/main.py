@@ -1,13 +1,89 @@
+import os
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, EmailStr
+from starlette.middleware.sessions import SessionMiddleware
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
+import pipeline
+from auth import create_user, get_current_user, get_user_by_email, require_admin, verify_password
 from db import query
+from sql_runner import run_query
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
-app = FastAPI(title="Weather Pipeline API")
+app = FastAPI(title="Weather Pipeline App")
+
+# SESSION_SECRET_KEY should be a real random value if this is ever reachable
+# beyond your own machine. The fallback below is fine for local-only use
+# (same tier as the other local-dev-only defaults documented in the README)
+# but sessions signed with it are not secure against someone who reads this
+# source file, same tradeoff as any other hardcoded local-dev secret here.
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=os.environ.get("SESSION_SECRET_KEY", "local-dev-only-secret-change-if-ever-deployed"),
+    session_cookie="weather_app_session",
+    same_site="lax",
+)
+
+
+@app.exception_handler(HTTPException)
+async def auth_aware_exception_handler(request: Request, exc: HTTPException):
+    # Plain JSON errors - the frontend decides what to do (e.g. redirect to
+    # /login.html on a 401) rather than the server trying to guess.
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+
+class SignupBody(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class LoginBody(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class QueryBody(BaseModel):
+    sql: str
+
+
+# ---- Auth ----------------------------------------------------------------
+
+
+@app.post("/api/auth/signup")
+def signup(body: SignupBody, request: Request):
+    if len(body.password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+    user = create_user(body.email, body.password)
+    request.session["user_id"] = user["id"]
+    return {"email": user["email"], "role": user["role"]}
+
+
+@app.post("/api/auth/login")
+def login(body: LoginBody, request: Request):
+    user = get_user_by_email(body.email)
+    if not user or not verify_password(body.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    request.session["user_id"] = user["id"]
+    return {"email": user["email"], "role": user["role"]}
+
+
+@app.post("/api/auth/logout")
+def logout(request: Request):
+    request.session.clear()
+    return {"ok": True}
+
+
+@app.get("/api/auth/me")
+def me(user: dict = Depends(get_current_user)):
+    return {"email": user["email"], "role": user["role"]}
+
+
+# ---- Dashboard (logged-in users) ------------------------------------------
 
 
 @app.get("/api/health")
@@ -17,13 +93,13 @@ def health():
 
 
 @app.get("/api/cities")
-def list_cities():
+def list_cities(user: dict = Depends(get_current_user)):
     rows = query("SELECT DISTINCT city FROM marts.fct_daily_weather ORDER BY city")
     return [row["city"] for row in rows]
 
 
 @app.get("/api/weather/{city}")
-def city_weather(city: str, days: int = 30):
+def city_weather(city: str, days: int = 30, user: dict = Depends(get_current_user)):
     rows = query(
         """
         SELECT date, temperature_max_c, temperature_min_c, precipitation_mm,
@@ -40,11 +116,7 @@ def city_weather(city: str, days: int = 30):
 
 
 @app.get("/api/forecast/{city}")
-def city_forecast(city: str):
-    # marts.weather_forecast accumulates every past prediction it's ever made
-    # (upserted, never deleted) so old forecasts for dates long since realized
-    # stick around as a record of "what we predicted back then." For the
-    # dashboard we only want the current, forward-looking forecast.
+def city_forecast(city: str, user: dict = Depends(get_current_user)):
     return query(
         """
         SELECT date, predicted_temp_max_c, predicted_precip_mm
@@ -57,7 +129,7 @@ def city_forecast(city: str):
 
 
 @app.get("/api/rain-stats")
-def rain_stats():
+def rain_stats(user: dict = Depends(get_current_user)):
     return query(
         """
         SELECT
@@ -72,6 +144,39 @@ def rain_stats():
         ORDER BY city
         """
     )
+
+
+# ---- Database page (admin only - runs arbitrary SELECTs) ------------------
+
+
+@app.get("/api/db/tables")
+def list_tables(user: dict = Depends(require_admin)):
+    return query(
+        """
+        SELECT table_schema, table_name
+        FROM information_schema.tables
+        WHERE table_schema IN ('raw', 'staging', 'marts')
+        ORDER BY table_schema, table_name
+        """
+    )
+
+
+@app.post("/api/db/query")
+def db_query(body: QueryBody, user: dict = Depends(require_admin)):
+    return run_query(body.sql)
+
+
+# ---- Pipeline status page --------------------------------------------------
+
+
+@app.get("/api/pipeline/runs")
+def pipeline_runs(user: dict = Depends(get_current_user)):
+    return pipeline.recent_runs()
+
+
+@app.get("/api/pipeline/runs/{run_id}/tasks")
+def pipeline_run_tasks(run_id: str, user: dict = Depends(get_current_user)):
+    return pipeline.tasks_for_run(run_id)
 
 
 # Must be mounted last - it's a catch-all for "/" and would otherwise shadow

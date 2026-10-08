@@ -1,22 +1,54 @@
-const citySelect = document.getElementById("city-select");
-const chartStatus = document.getElementById("chart-status");
-const rainTableBody = document.querySelector("#rain-table tbody");
 let chart;
+let currentUser = null;
 
-async function fetchJSON(url) {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`${url} -> ${res.status}`);
-  return res.json();
+async function fetchJSON(url, options) {
+  const res = await fetch(url, options);
+  if (res.status === 401) {
+    window.location.href = "/login.html";
+    throw new Error("not logged in");
+  }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || `${url} -> ${res.status}`);
+  return data;
 }
+
+// ---- Auth / shell ----------------------------------------------------
+
+async function initShell() {
+  currentUser = await fetchJSON("/api/auth/me");
+  document.getElementById("user-email").textContent = currentUser.email;
+  if (currentUser.role === "admin") {
+    document.getElementById("nav-database").hidden = false;
+  }
+
+  document.getElementById("logout-btn").addEventListener("click", async () => {
+    await fetch("/api/auth/logout", { method: "POST" });
+    window.location.href = "/login.html";
+  });
+
+  document.querySelectorAll(".nav-link").forEach((btn) => {
+    btn.addEventListener("click", () => showSection(btn.dataset.section));
+  });
+}
+
+function showSection(name) {
+  document.querySelectorAll(".section").forEach((s) => (s.hidden = s.id !== `section-${name}`));
+  document.querySelectorAll(".nav-link").forEach((b) => b.classList.toggle("active", b.dataset.section === name));
+  if (name === "database" && !tablesLoaded) loadTables();
+  if (name === "pipeline" && !runsLoaded) loadRuns();
+}
+
+// ---- Dashboard ---------------------------------------------------------
 
 async function loadCities() {
   const cities = await fetchJSON("/api/cities");
-  citySelect.innerHTML = cities.map((c) => `<option value="${c}">${c}</option>`).join("");
+  const select = document.getElementById("city-select");
+  select.innerHTML = cities.map((c) => `<option value="${c}">${c}</option>`).join("");
 }
 
 async function loadRainStats() {
   const stats = await fetchJSON("/api/rain-stats");
-  rainTableBody.innerHTML = stats
+  document.querySelector("#rain-table tbody").innerHTML = stats
     .map(
       (s) => `
       <tr>
@@ -31,7 +63,8 @@ async function loadRainStats() {
 }
 
 async function loadCityChart(city) {
-  chartStatus.textContent = "Loading...";
+  const status = document.getElementById("chart-status");
+  status.textContent = "Loading...";
   const [actual, forecast] = await Promise.all([
     fetchJSON(`/api/weather/${encodeURIComponent(city)}?days=30`),
     fetchJSON(`/api/forecast/${encodeURIComponent(city)}`),
@@ -45,21 +78,8 @@ async function loadCityChart(city) {
     type: "line",
     data: {
       datasets: [
-        {
-          label: "Actual max temp (°C)",
-          data: actualPoints,
-          borderColor: "#2f6fed",
-          backgroundColor: "#2f6fed",
-          tension: 0.25,
-        },
-        {
-          label: "Forecast max temp (°C)",
-          data: forecastPoints,
-          borderColor: "#f2a93c",
-          backgroundColor: "#f2a93c",
-          borderDash: [6, 4],
-          tension: 0.25,
-        },
+        { label: "Actual max temp (°C)", data: actualPoints, borderColor: "#2f6fed", backgroundColor: "#2f6fed", tension: 0.25 },
+        { label: "Forecast max temp (°C)", data: forecastPoints, borderColor: "#f2a93c", backgroundColor: "#f2a93c", borderDash: [6, 4], tension: 0.25 },
       ],
     },
     options: {
@@ -70,22 +90,119 @@ async function loadCityChart(city) {
     },
   });
 
-  chartStatus.textContent = `${actual.length} actual days, ${forecast.length} forecast days`;
+  status.textContent = `${actual.length} actual days, ${forecast.length} forecast days`;
 }
 
-async function init() {
-  try {
-    await loadCities();
-    await loadRainStats();
-    if (citySelect.options.length) {
-      await loadCityChart(citySelect.value);
+async function initDashboard() {
+  await loadCities();
+  await loadRainStats();
+  const select = document.getElementById("city-select");
+  if (select.options.length) await loadCityChart(select.value);
+  select.addEventListener("change", () => loadCityChart(select.value));
+}
+
+// ---- Database (admin only) ---------------------------------------------
+
+let tablesLoaded = false;
+
+function renderResultTable(el, columns, rows) {
+  if (!columns.length) {
+    el.innerHTML = "<tbody><tr><td>No rows</td></tr></tbody>";
+    return;
+  }
+  const head = `<thead><tr>${columns.map((c) => `<th>${c}</th>`).join("")}</tr></thead>`;
+  const body = `<tbody>${rows
+    .map((row) => `<tr>${columns.map((c) => `<td>${row[c] ?? ""}</td>`).join("")}</tr>`)
+    .join("")}</tbody>`;
+  el.innerHTML = head + body;
+}
+
+async function loadTables() {
+  tablesLoaded = true;
+  const tables = await fetchJSON("/api/db/tables");
+  const picker = document.getElementById("table-picker");
+  picker.innerHTML =
+    `<option value="">Pick a table to insert a starter query...</option>` +
+    tables.map((t) => `<option value="${t.table_schema}.${t.table_name}">${t.table_schema}.${t.table_name}</option>`).join("");
+  picker.addEventListener("change", () => {
+    if (picker.value) {
+      document.getElementById("sql-box").value = `select * from ${picker.value} order by date desc limit 20`;
     }
+  });
+}
+
+async function runQuery() {
+  const sql = document.getElementById("sql-box").value;
+  const status = document.getElementById("query-status");
+  status.textContent = "Running...";
+  try {
+    const result = await fetchJSON("/api/db/query", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sql }),
+    });
+    renderResultTable(document.getElementById("query-result-table"), result.columns, result.rows);
+    status.textContent = `${result.rows.length} rows`;
   } catch (err) {
-    chartStatus.textContent = `Error: ${err.message}`;
-    console.error(err);
+    status.textContent = err.message;
   }
 }
 
-citySelect.addEventListener("change", () => loadCityChart(citySelect.value));
+// ---- Pipeline status -----------------------------------------------------
+
+let runsLoaded = false;
+
+function fmtTime(iso) {
+  return iso ? new Date(iso).toLocaleString() : "-";
+}
+
+async function loadRuns() {
+  runsLoaded = true;
+  const runs = await fetchJSON("/api/pipeline/runs");
+  const tbody = document.querySelector("#runs-table tbody");
+  tbody.innerHTML = runs
+    .map(
+      (r) => `
+      <tr class="run-row" data-run-id="${r.run_id}">
+        <td>${r.run_id}</td>
+        <td>${r.run_type}</td>
+        <td><span class="pill pill-${r.state}">${r.state}</span></td>
+        <td>${fmtTime(r.start_date)}</td>
+        <td>${fmtTime(r.end_date)}</td>
+      </tr>`
+    )
+    .join("");
+  tbody.querySelectorAll(".run-row").forEach((row) => {
+    row.addEventListener("click", () => loadTasks(row.dataset.runId));
+  });
+  if (runs.length) loadTasks(runs[0].run_id);
+}
+
+async function loadTasks(runId) {
+  const tasks = await fetchJSON(`/api/pipeline/runs/${encodeURIComponent(runId)}/tasks`);
+  document.querySelector("#tasks-table tbody").innerHTML = tasks
+    .map(
+      (t) => `
+      <tr>
+        <td>${t.task_id}</td>
+        <td><span class="pill pill-${t.state}">${t.state ?? "pending"}</span></td>
+        <td>${fmtTime(t.start_date)}</td>
+        <td>${fmtTime(t.end_date)}</td>
+      </tr>`
+    )
+    .join("");
+}
+
+// ---- Boot ----------------------------------------------------------------
+
+async function init() {
+  try {
+    await initShell();
+    await initDashboard();
+    document.getElementById("run-query-btn").addEventListener("click", runQuery);
+  } catch (err) {
+    console.error(err);
+  }
+}
 
 init();
