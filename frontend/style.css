@@ -14,6 +14,16 @@
   box-sizing: border-box;
 }
 
+/* The `hidden` attribute must always win over any other `display` rule in
+   this file - this bug (a class setting its own `display` silently beats
+   the browser's default `[hidden] { display: none }`) has bitten three
+   different elements (.section, .nav-link, .metabase-frame) individually.
+   One global, maximum-specificity rule instead of patching each class as
+   it's found. */
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   background: var(--bg);
@@ -267,10 +277,6 @@ main {
   gap: 20px;
 }
 
-.section[hidden] {
-  display: none;
-}
-
 textarea#sql-box {
   width: 100%;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -351,6 +357,7 @@ button#run-query-btn {
   display: block;
   margin-top: 12px;
 }
+
 
 .audit-detail {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
