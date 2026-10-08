@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Weather Pipeline Dashboard</title>
+  <link rel="stylesheet" href="style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+</head>
+<body>
+  <header>
+    <h1>Weather Pipeline Dashboard</h1>
+    <p>Reads live from the same warehouse the Airflow pipeline updates daily.</p>
+  </header>
+
+  <main>
+    <section class="card">
+      <h2>Actual vs. forecast temperature</h2>
+      <div class="controls">
+        <label for="city-select">City</label>
+        <select id="city-select"></select>
+        <span class="status" id="chart-status"></span>
+      </div>
+      <canvas id="temp-chart" height="110"></canvas>
+    </section>
+
+    <section class="card">
+      <h2>Rain analysis by city</h2>
+      <table id="rain-table">
+        <thead>
+          <tr>
+            <th>City</th>
+            <th>Rain days</th>
+            <th>% of days</th>
+            <th>Avg max temp (rain)</th>
+            <th>Avg max temp (no rain)</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -8,7 +8,9 @@ A beginner-friendly, fully local data engineering project. Every day it:
 3. **Transforms** it into an analytics-ready table with dbt,
 4. **Forecasts** the next 7 days per city with a simple trend model,
 5. **Orchestrates** all of the above with Airflow, and
-6. **Visualizes** actuals and forecasts in Metabase.
+6. **Visualizes** actuals and forecasts in Metabase - and, as a full-stack
+   companion, a small custom **FastAPI + vanilla-JS web app**
+   (`api/` + `frontend/`) that reads from the same warehouse.
 
 Everything runs natively on macOS via Homebrew + a Python virtualenv. No
 Docker (it was dropped for privacy reasons).
@@ -31,7 +33,11 @@ extraction/fetch_weather.py ──> raw.weather_daily            (Postgres table
 forecast/forecast_weather.py ──> marts.weather_forecast      (Postgres table)
                                        |
                                        v
-                               Metabase dashboard
+                       ┌───────────────┴───────────────┐
+                       v                                v
+               Metabase dashboard          api/main.py (FastAPI) ──> frontend/
+                                            GET /api/cities, /api/weather/{city},
+                                            /api/forecast/{city}, /api/rain-stats
 
 Airflow DAG "weather_pipeline" (@daily):
     extract_weather  >>  dbt_run  >>  forecast_weather
@@ -48,6 +54,8 @@ Airflow DAG "weather_pipeline" (@daily):
 | Forecasting    | Python (`numpy`, `psycopg2`)           | `forecast/`                  |
 | Orchestration  | Apache Airflow 2.9.3 (standalone mode) | `dags/`                      |
 | Visualization  | Metabase (plain `.jar`)                | `metabase/` (not in git)     |
+| Web app API    | FastAPI + `psycopg2`                   | `api/`                       |
+| Web app UI     | Plain HTML/CSS/JS + Chart.js (CDN)     | `frontend/`                  |
 
 ## Project structure
 
@@ -71,6 +79,14 @@ Airflow DAG "weather_pipeline" (@daily):
 │       └── marts/                     # fct_daily_weather (table)
 ├── sql/
 │   └── init_warehouse_schemas.sql     # creates schemas + raw/forecast tables
+├── api/
+│   ├── main.py                        # FastAPI app: /api/* + serves frontend/
+│   ├── db.py                          # psycopg2 connection helper
+│   └── requirements.txt
+├── frontend/
+│   ├── index.html
+│   ├── app.js                         # calls /api/*, renders with Chart.js
+│   └── style.css
 ├── .env.example                       # optional DB connection overrides
 └── README.md
 ```
@@ -121,6 +137,20 @@ Not tracked by git: `.venv/`, `airflow_home/`, `metabase/`, and
   per task.
 - `extract_weather` (PythonOperator) → `dbt_run` (BashOperator running the
   venv's `dbt run`) → `forecast_weather` (PythonOperator).
+
+### 5. Web app — `api/main.py` + `frontend/`
+
+- A FastAPI app with four read-only JSON endpoints under `/api/*` (cities,
+  per-city actuals, per-city forecast, rain stats), each a thin wrapper
+  around a SQL query against the `marts` tables - no business logic lives
+  here beyond what the SQL expresses.
+- `StaticFiles` mounted at `/` serves `frontend/`'s plain HTML/CSS/JS
+  directly from the same process, so the API and UI are one app, one port,
+  no CORS configuration needed.
+- The frontend has no build step - it's loaded as-is by the browser, with
+  Chart.js pulled from a CDN `<script>` tag.
+- This is a separate, independent consumer of the warehouse - it doesn't
+  participate in the DAG and has no effect on Metabase or vice versa.
 
 ## Warehouse data model
 
@@ -282,6 +312,32 @@ Dashboard ideas:
 - Rainy days per city per month (`is_rain_day`)
 - Actuals vs. forecast: join `marts.fct_daily_weather` and
   `marts.weather_forecast` on `(city, date)` and plot both lines
+
+### 4. Run the web app (FastAPI + frontend)
+
+```bash
+cd "/Users/janvier/Data Engineer Project/api"
+export WAREHOUSE_DB_HOST=localhost WAREHOUSE_DB_PORT=5432 WAREHOUSE_DB_NAME=warehouse \
+       WAREHOUSE_DB_USER=warehouse WAREHOUSE_DB_PASSWORD=warehouse
+../.venv/bin/uvicorn main:app --port 8001
+```
+
+Open [localhost:8001](http://localhost:8001) - FastAPI serves both the JSON
+API (under `/api/*`) and the static frontend from the same process, so
+there's nothing else to run and no CORS setup needed. Pick a city from the
+dropdown to see its actual-vs-forecast temperature chart; the rain-analysis
+table below it covers all cities at once.
+
+API endpoints, if you want to poke at them directly or build more frontend
+on top:
+
+| Endpoint                  | Returns                                             |
+|----------------------------|------------------------------------------------------|
+| `GET /api/cities`          | list of tracked city names                           |
+| `GET /api/weather/{city}`  | last `days` (default 30) of actuals for a city       |
+| `GET /api/forecast/{city}` | current forward-looking forecast (not past ones)     |
+| `GET /api/rain-stats`      | rain-day % and avg temp (rain vs. no-rain) per city  |
+| `GET /api/health`          | `{"status": "ok"}` if the DB connection works        |
 
 ## Running steps manually (outside Airflow)
 
