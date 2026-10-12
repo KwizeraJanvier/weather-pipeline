@@ -3,6 +3,7 @@ required) and upsert it into the raw.weather_daily table in the warehouse.
 """
 import multiprocessing
 import os
+import sys
 from datetime import date, timedelta
 
 import psycopg2
@@ -108,7 +109,12 @@ def _run_impl() -> None:
 
 
 def run() -> None:
-    """Run extraction in a subprocess with a hard wall-clock budget.
+    """Run extraction - on macOS, in a subprocess with a hard wall-clock budget.
+
+    Everywhere else (the Docker/Airflow container, GitHub Actions) the work
+    just runs inline: the hang described below is macOS-only, and forking
+    from inside Airflow's own worker processes isn't worth the risk when
+    there's nothing to guard against.
 
     On this macOS version, certain system calls (requests' proxy lookup,
     libpq's GSSAPI credential probe, likely others we haven't hit yet) can
@@ -120,6 +126,9 @@ def run() -> None:
     if it doesn't finish within RUN_TIMEOUT_SECONDS, kill it and fail the
     task so Airflow retries, instead of blocking the pipeline for hours.
     """
+    if sys.platform != "darwin":
+        _run_impl()
+        return
     proc = multiprocessing.Process(target=_run_impl)
     proc.start()
     proc.join(RUN_TIMEOUT_SECONDS)

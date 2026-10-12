@@ -8,6 +8,7 @@ an accurate weather forecaster.
 """
 import multiprocessing
 import os
+import sys
 from datetime import date, timedelta
 
 import numpy as np
@@ -121,8 +122,12 @@ def run() -> None:
     See extraction/fetch_weather.py's run() for why: macOS's cfprefsd can
     hang forever on certain system calls in a way signal.alarm can't
     interrupt. A subprocess can be SIGKILL'd from outside, which reliably
-    works where in-process timeouts don't.
+    works where in-process timeouts don't. macOS-only: elsewhere it just
+    runs inline.
     """
+    if sys.platform != "darwin":
+        _run_impl()
+        return
     proc = multiprocessing.Process(target=_run_impl)
     proc.start()
     proc.join(RUN_TIMEOUT_SECONDS)

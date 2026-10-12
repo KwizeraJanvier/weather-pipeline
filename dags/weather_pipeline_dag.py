@@ -6,7 +6,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 EXTRACTION_DIR = PROJECT_ROOT / "extraction"
 FORECAST_DIR = PROJECT_ROOT / "forecast"
 DBT_PROJECT_DIR = PROJECT_ROOT / "dbt" / "weather_dbt"
-DBT_BIN = PROJECT_ROOT / ".venv" / "bin" / "dbt"
+DBT_BIN = "dbt"  # pip-installed globally in the Airflow image - see docker/airflow/Dockerfile
 
 sys.path.insert(0, str(EXTRACTION_DIR))
 sys.path.insert(0, str(FORECAST_DIR))
@@ -21,10 +21,8 @@ from forecast_weather import run as run_forecast
 default_args = {
     "owner": "data-eng",
     "retries": 1,
-    # Safety net against macOS's cfprefsd occasionally hanging forever on an
-    # unrelated system call deep inside a C library (seen in both requests'
-    # proxy lookup and libpq's GSS probe). Without this, a single hung task
-    # can block the pipeline for hours instead of failing fast and retrying.
+    # General safety net: fail fast and retry instead of a hung task
+    # blocking the pipeline indefinitely.
     "execution_timeout": timedelta(minutes=5),
 }
 
@@ -45,14 +43,7 @@ with DAG(
 
     transform = BashOperator(
         task_id="dbt_run",
-        # PGGSSENCMODE=disable: see extraction/fetch_weather.py - dbt's Postgres
-        # adapter goes through the same libpq GSSAPI probe that can hang
-        # forever on this macOS version. This env var is libpq's own
-        # equivalent of the gssencmode="disable" connect() kwarg.
-        bash_command=(
-            f'cd "{DBT_PROJECT_DIR}" && '
-            f'PGGSSENCMODE=disable "{DBT_BIN}" run --profiles-dir "{DBT_PROJECT_DIR}"'
-        ),
+        bash_command=f'cd "{DBT_PROJECT_DIR}" && {DBT_BIN} run --profiles-dir "{DBT_PROJECT_DIR}"',
     )
 
     forecast = PythonOperator(

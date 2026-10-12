@@ -1,19 +1,37 @@
 # Weather Batch Pipeline
 
-A beginner-friendly, fully local data engineering project. Every day it:
+A beginner-friendly data engineering project. Every day it:
 
 1. **Extracts** daily historical weather for five cities from the free
    [Open-Meteo](https://open-meteo.com/) API (no API key needed),
 2. **Loads** it into a Postgres warehouse,
 3. **Transforms** it into an analytics-ready table with dbt,
 4. **Forecasts** the next 7 days per city with a simple trend model,
-5. **Orchestrates** all of the above with Airflow, and
+5. **Orchestrates** all of the above, and
 6. **Visualizes** actuals and forecasts in Metabase - and, as a full-stack
-   companion, a small custom **FastAPI + vanilla-JS web app**
-   (`api/` + `frontend/`) that reads from the same warehouse.
+   companion, a custom **FastAPI + vanilla-JS web app** (`api/` +
+   `frontend/`) with logins, a SQL tool, pipeline status and an audit log.
 
-Everything runs natively on macOS via Homebrew + a Python virtualenv. No
-Docker (it was dropped for privacy reasons).
+## Two ways to run it
+
+The same code runs in two environments. They are independent copies - each
+has its own database, its own users, and its own data.
+
+| | **Cloud** (the "real" deployment) | **Local** (Docker) |
+|---|---|---|
+| Database | [Neon](https://neon.tech) (free cloud Postgres) | Postgres container |
+| Pipeline runs on | GitHub Actions, daily at 06:00 UTC | Airflow container, `@daily` |
+| Web app | Render web service (public URL) | `webapp` container, `localhost:8001` |
+| Metabase / Power BI | point at Neon | Metabase container, `localhost:3000` |
+| Needs your Mac on? | No | Yes |
+
+**Why the cloud pipeline uses GitHub Actions and not Airflow:** the author's
+network blocks outbound Postgres connections (port 5432) entirely, so
+anything running on their Mac - including a local Airflow - can't write to
+a cloud database. GitHub's runners have normal networking. (For the same
+reason, schema changes to Neon also go through a GitHub Actions workflow
+rather than `psql` from a laptop.) The local Docker stack is for developing
+and testing without touching the cloud.
 
 ## Architecture
 
@@ -39,68 +57,50 @@ forecast/forecast_weather.py ──> marts.weather_forecast      (Postgres table
                                             GET /api/cities, /api/weather/{city},
                                             /api/forecast/{city}, /api/rain-stats
 
-Airflow DAG "weather_pipeline" (@daily):
-    extract_weather  >>  dbt_run  >>  forecast_weather
+The pipeline, three steps: extract_weather  >>  dbt_run  >>  forecast_weather
+    cloud: .github/workflows/daily_pipeline.yml (GitHub Actions)
+    local: dags/weather_pipeline_dag.py        (Airflow DAG, @daily)
 ```
 
 ## Tech stack
 
-| Layer          | Tool                                   | Where                        |
-|----------------|----------------------------------------|------------------------------|
-| Source         | Open-Meteo archive API                 | external, free, no key       |
-| Extraction     | Python (`requests`, `psycopg2`)        | `extraction/`                |
-| Warehouse      | Postgres 16 (Homebrew)                 | `sql/`                       |
-| Transformation | dbt-core / dbt-postgres 1.8.x          | `dbt/weather_dbt/`           |
-| Forecasting    | Python (`numpy`, `psycopg2`)           | `forecast/`                  |
-| Orchestration  | Apache Airflow 2.9.3 (standalone mode) | `dags/`                      |
-| Visualization  | Metabase (plain `.jar`)                | `metabase/` (not in git)     |
-| Web app API    | FastAPI + `psycopg2`                   | `api/`                       |
-| Web app UI     | Plain HTML/CSS/JS + Chart.js (CDN)     | `frontend/`                  |
+| Layer          | Tool                                         | Where                          |
+|----------------|----------------------------------------------|--------------------------------|
+| Source         | Open-Meteo archive API                       | external, free, no key         |
+| Extraction     | Python (`requests`, `psycopg2`)              | `extraction/`                  |
+| Warehouse      | Postgres 16 (Docker) / Neon (cloud)          | `sql/`                         |
+| Transformation | dbt-core / dbt-postgres 1.8.x                | `dbt/weather_dbt/`             |
+| Forecasting    | Python (`numpy`, `psycopg2`)                 | `forecast/`                    |
+| Orchestration  | Airflow 2.9.3 (Docker) / GitHub Actions (cloud) | `dags/`, `.github/workflows/` |
+| Visualization  | Metabase; Power BI                           | `docker-compose.yml`           |
+| Web app API    | FastAPI + `psycopg2`                         | `api/`                         |
+| Web app UI     | Plain HTML/CSS/JS + Chart.js (CDN)           | `frontend/`                    |
+| Hosting        | Render (web app), Neon (database)            | see "Cloud"                    |
 
 ## Project structure
 
 ```
 .
+├── .github/workflows/
+│   ├── setup_neon.yml                 # manual, one-time: apply schema + roles to Neon
+│   └── daily_pipeline.yml             # cloud pipeline: extract >> dbt run >> forecast
 ├── dags/
-│   └── weather_pipeline_dag.py        # Airflow DAG: extract >> dbt run >> forecast
-├── extraction/
-│   ├── config.py                      # cities + how many days back to fetch
-│   ├── fetch_weather.py               # Open-Meteo -> raw.weather_daily
-│   └── requirements.txt
-├── forecast/
-│   ├── forecast_weather.py            # marts.fct_daily_weather -> marts.weather_forecast
-│   └── requirements.txt
-├── dbt/weather_dbt/
-│   ├── dbt_project.yml
-│   ├── profiles.yml.example           # copy to profiles.yml (gitignored)
-│   ├── macros/generate_schema_name.sql
-│   └── models/
-│       ├── staging/                   # stg_weather (view) + source + tests
-│       └── marts/                     # fct_daily_weather (table)
+│   └── weather_pipeline_dag.py        # local Airflow DAG: same three steps
+├── extraction/                        # Open-Meteo -> raw.weather_daily
+├── forecast/                          # marts.fct_daily_weather -> marts.weather_forecast
+├── dbt/weather_dbt/                   # staging + marts models
 ├── sql/
-│   ├── init_warehouse_schemas.sql     # creates schemas + raw/forecast tables
-│   └── init_app_schema.sql            # app.users/audit_log + app_readonly role
-├── api/
-│   ├── main.py                        # FastAPI app: /api/* + serves frontend/
-│   ├── auth.py                        # bcrypt hashing, sessions, role checks
-│   ├── audit.py                       # writes/reads app.audit_log
-│   ├── db.py                          # psycopg2 connection helpers
-│   ├── sql_runner.py                  # validates + runs admin SQL queries
-│   ├── pipeline.py                    # reads Airflow's own SQLite metadata
-│   ├── metabase_embed.py              # signs Metabase static-embed JWTs
-│   └── requirements.txt
-├── frontend/
-│   ├── login.html / login.js          # signup + login form, show/hide password
-│   ├── index.html                     # app shell: Dashboard/Metabase/Database/
-│   │                                   #   Pipeline/Audit Log
-│   ├── app.js                         # calls /api/*, renders with Chart.js
-│   └── style.css
-├── .env.example                       # optional DB connection overrides
+│   ├── init_warehouse_schemas.sql     # raw/staging/marts schemas + raw/forecast tables
+│   ├── init_app_schema.sql            # app.users/audit_log + app_readonly role (Docker)
+│   ├── init_app_schema_neon.sql       # same, for Neon (password comes from a secret)
+│   └── create_airflow_db.sql          # Docker only: Airflow's metadata database
+├── api/                               # FastAPI app (auth, SQL tool, pipeline status, ...)
+├── frontend/                          # login page + app shell (no build step)
+├── docker/                            # Dockerfiles for Airflow(+dbt) and the web app
+├── docker-compose.yml                 # the whole local stack
+├── .env.example                       # settings for docker-compose
 └── README.md
 ```
-
-Not tracked by git: `.venv/`, `airflow_home/`, `metabase/`, and
-`dbt/weather_dbt/profiles.yml`.
 
 ## How each step works
 
@@ -139,12 +139,18 @@ Not tracked by git: `.venv/`, `airflow_home/`, `metabase/`, and
   latest forecast made for it (the one made the day before its actuals
   arrived).
 
-### 4. Orchestration — `dags/weather_pipeline_dag.py`
+### 4. Orchestration
 
-- DAG id `weather_pipeline`, scheduled `@daily`, `catchup=False`, 1 retry
-  per task.
-- `extract_weather` (PythonOperator) → `dbt_run` (BashOperator running the
-  venv's `dbt run`) → `forecast_weather` (PythonOperator).
+The same three steps run in both environments:
+
+- **Local (Docker):** `dags/weather_pipeline_dag.py` - DAG id
+  `weather_pipeline`, `@daily`, `catchup=False`, 1 retry and a 5-minute
+  timeout per task. `extract_weather` (PythonOperator) → `dbt_run`
+  (BashOperator running `dbt run`) → `forecast_weather` (PythonOperator).
+- **Cloud:** `.github/workflows/daily_pipeline.yml` - a scheduled GitHub
+  Actions workflow (06:00 UTC, also triggerable by hand) that installs the
+  dependencies and runs `fetch_weather.py`, `dbt run`, `forecast_weather.py`
+  in order against Neon.
 
 ### 5. Web app — `api/main.py` + `frontend/`
 
@@ -155,8 +161,12 @@ Not tracked by git: `.venv/`, `airflow_home/`, `metabase/`, and
   embedded Metabase dashboard (any logged-in user, via a signed JWT so it
   stays behind this app's login rather than a public link), the database
   tool (admin only - see "Security model" below), pipeline status (any
-  logged-in user, reads Airflow's own SQLite file directly), and the audit
-  log (admin only).
+  logged-in user), and the audit log (admin only).
+- Pipeline status reads from wherever the pipeline actually runs, chosen by
+  the `PIPELINE_SOURCE` environment variable: `github` (default - GitHub's
+  Actions API, each workflow step shown as a "task") or `airflow` (set in
+  `docker-compose.yml` - Airflow's `airflow_meta` database). Same response
+  shape either way, so the frontend doesn't care.
 - `StaticFiles` mounted at `/` serves `frontend/`'s plain HTML/CSS/JS
   directly from the same process, so the API and UI are one app, one port,
   no CORS configuration needed.
@@ -165,7 +175,7 @@ Not tracked by git: `.venv/`, `airflow_home/`, `metabase/`, and
   signup/login (with a show/hide toggle on the password field); `index.html`/
   `app.js` are the post-login app shell with its five sidebar sections.
 - This is a separate, independent consumer of the warehouse - it doesn't
-  participate in the DAG and has no effect on Metabase or vice versa.
+  participate in the pipeline and has no effect on Metabase or vice versa.
 
 #### Why not real-time streaming
 
@@ -187,177 +197,159 @@ this project - match the tool to the actual shape of the data.
 | `marts.fct_daily_weather`    | dbt (table)                     | city × day        | + `temperature_range_c`, `is_rain_day`                                      |
 | `marts.weather_forecast`     | `forecast/forecast_weather.py`  | city × future day | `predicted_temp_max_c`, `predicted_precip_mm`, `generated_at`               |
 
-## One-time setup (already done on this machine)
+## Cloud (Neon + GitHub Actions + Render)
 
-These steps were run once to provision the machine. They're kept here for
-reference, or for setting this up on another Mac:
+### How it fits together
 
-```bash
-brew install postgresql@16 python@3.12 openjdk
-brew services start postgresql@16
+- **Neon** holds the warehouse (`raw`/`staging`/`marts`) *and* the web app's
+  own tables (`app.users`, `app.audit_log`), in one database.
+- **GitHub Actions** runs the daily pipeline against Neon, and also applies
+  schema changes (see below).
+- **Render** hosts the web app, reading from Neon.
+- The repository is public, so **no credentials are ever committed** - they
+  live in GitHub Actions secrets and in Render's environment variables.
 
-# Create the warehouse role + database, then schemas and tables
-psql -U "$(whoami)" -d postgres -c "CREATE ROLE warehouse LOGIN PASSWORD 'warehouse';"
-psql -U "$(whoami)" -d postgres -c "CREATE DATABASE warehouse OWNER warehouse;"
-psql "postgresql://warehouse:warehouse@localhost:5432/warehouse" -f sql/init_warehouse_schemas.sql
+### GitHub Actions secrets
 
-# App auth schema + the read-only role the web app's SQL tool runs as.
-# Needs CREATE ROLE, so run as the superuser ($(whoami)), not `warehouse`.
-psql -U "$(whoami)" -d warehouse -f sql/init_app_schema.sql
+Set once with `gh secret set <NAME>` (or the repo's Settings → Secrets):
 
-# Project virtualenv with Airflow + dbt + extraction/forecast deps
-python3.12 -m venv .venv
-AIRFLOW_VERSION=2.9.3
-PYTHON_VERSION=3.12
-CONSTRAINT_URL="https://raw.githubusercontent.com/apache/airflow/constraints-${AIRFLOW_VERSION}/constraints-${PYTHON_VERSION}.txt"
-.venv/bin/pip install "apache-airflow==${AIRFLOW_VERSION}" --constraint "${CONSTRAINT_URL}" \
-    "dbt-core==1.8.*" "dbt-postgres==1.8.*" "requests==2.32.3" "psycopg2-binary==2.9.9"
-.venv/bin/pip install -r forecast/requirements.txt   # numpy for the forecast step
-.venv/bin/pip install -r api/requirements.txt        # fastapi, bcrypt, etc. for the web app
+| Secret | Value |
+|---|---|
+| `NEON_HOST` | Neon's **direct** hostname (the connection string's host *without* `-pooler`) |
+| `NEON_USER` | the Neon role, e.g. `neondb_owner` |
+| `NEON_PASSWORD` | that role's password |
+| `NEON_DBNAME` | the database name, e.g. `neondb` |
+| `APP_READONLY_DB_PASSWORD` | a new random password for the web app's read-only SQL role |
 
-# dbt profile (local only, not committed)
-cp dbt/weather_dbt/profiles.yml.example dbt/weather_dbt/profiles.yml
+### One-time setup of a fresh Neon database
 
-# Airflow metadata db, pointed at this project's dags/ folder
-export AIRFLOW_HOME="$(pwd)/airflow_home"
-.venv/bin/airflow db migrate
-# then edit airflow_home/airflow.cfg: dags_folder -> this project's dags/ folder,
-# load_examples -> False (already done on this machine)
+Run the **One-time Neon setup** workflow (Actions tab → *Run workflow*, or
+`gh workflow run setup_neon.yml`). It applies `sql/init_warehouse_schemas.sql`
+and `sql/init_app_schema_neon.sql`, creating the schemas, tables and the
+`app_readonly` role. It's safe to re-run: re-running it also updates the
+`app_readonly` password to match the secret, which is how you rotate it.
 
-# macOS fork-safety fix (see "Known issues" below) - required for
-# `airflow standalone` / gunicorn to not crash. Not tracked by git since
-# .venv/ is gitignored - recreate these two files if the venv is rebuilt.
-cat > .venv/lib/python3.12/site-packages/_patch_setproctitle_hook.py <<'EOF'
-import sys
+Then run the **Daily weather pipeline** workflow once by hand
+(`gh workflow run daily_pipeline.yml`) to backfill 90 days of data; after
+that it runs by itself every day.
 
-if sys.platform == "darwin":
-    try:
-        import setproctitle
-    except ImportError:
-        pass
-    else:
-        def _noop_title(title: str) -> None:
-            return None
+> You can't just `psql` into Neon from this author's Mac (outbound port 5432
+> is blocked on their network) - that's the reason schema changes go through
+> a workflow. Anywhere with normal networking can connect directly.
 
-        setproctitle.setproctitle = _noop_title
-        setproctitle.setthreadtitle = _noop_title
-EOF
-echo "import _patch_setproctitle_hook" > .venv/lib/python3.12/site-packages/_patch_setproctitle.pth
+### Deploying the web app on Render
 
-# Metabase jar (~660MB download from downloads.metabase.com)
-mkdir -p metabase
-curl -L -o metabase/metabase.jar "https://downloads.metabase.com/latest/metabase.jar"
-```
+1. Render → **New → Web Service**, connect the GitHub repo
+   (`KwizeraJanvier/weather-pipeline`).
+2. Settings:
+   - **Root Directory:** `api`
+   - **Build Command:** `pip install -r requirements.txt`
+   - **Start Command:** `uvicorn main:app --host 0.0.0.0 --port $PORT`
+3. Environment variables:
 
-> **dbt versions:** newer `dbt-core` releases (2.x) moved Postgres to an
-> experimental adapter tier. This project pins `dbt-core`/`dbt-postgres` to
-> the `1.8.x` line, which fully supports Postgres.
+   ```
+   PYTHON_VERSION=3.12.7
+   WAREHOUSE_DB_HOST=<Neon direct host>
+   WAREHOUSE_DB_PORT=5432
+   WAREHOUSE_DB_NAME=neondb
+   WAREHOUSE_DB_USER=neondb_owner
+   WAREHOUSE_DB_PASSWORD=<Neon password>
+   WAREHOUSE_DB_SSLMODE=require
+   APP_READONLY_DB_USER=app_readonly
+   APP_READONLY_DB_PASSWORD=<same value as the APP_READONLY_DB_PASSWORD secret>
+   SESSION_SECRET_KEY=<a long random string: openssl rand -hex 32>
+   ```
 
-> **Upgrading an existing warehouse:** if your database was created before
-> the forecast step existed, re-run the init script to add
-> `marts.weather_forecast`. Every statement uses `IF NOT EXISTS`, so it's
-> safe to re-run:
-> ```bash
-> psql "postgresql://warehouse:warehouse@localhost:5432/warehouse" -f sql/init_warehouse_schemas.sql
-> ```
+   `PYTHON_VERSION` pins the Python that's actually been tested. Render's
+   default can be much newer, and an old `psycopg2-binary` (2.9.9) crashed at
+   startup on 3.14 with `undefined symbol: _PyInterpreterState_Get` - that's
+   why `api/requirements.txt` now pins `psycopg2-binary==2.9.11`, the first
+   release with 3.14 wheels.
+4. Redeploy after pushing changes (a service connected via "Public Git
+   Repository" doesn't auto-deploy; connecting your GitHub account does).
 
-### Configuration
+Leave the `METABASE_*` variables unset unless Metabase is hosted somewhere
+the deployed app can reach - until then the Metabase section just says
+embedding isn't configured. Render's free tier spins down when idle, so the
+first request after a quiet spell takes ~50 seconds.
 
-The Python scripts read their DB connection from `WAREHOUSE_DB_HOST`,
-`WAREHOUSE_DB_PORT`, `WAREHOUSE_DB_NAME`, `WAREHOUSE_DB_USER`, and
-`WAREHOUSE_DB_PASSWORD`. They fall back to the local defaults
-(`localhost:5432`, database/user/password all `warehouse`), so `.env.example`
-is only needed if you want to override them.
+### Power BI
 
-## Everyday use.
+Power BI Desktop is Windows-only. Point it at Neon (Get Data → PostgreSQL;
+server = the direct host, database `neondb`, SSL on) and read from
+`marts.fct_daily_weather` / `marts.weather_forecast`. For automatic updates,
+publish to the Power BI Service and add a scheduled refresh (Neon is
+cloud-reachable, so no gateway is needed) an hour or so after the 06:00 UTC
+pipeline run. Desktop itself only refreshes when you press Refresh.
 
-### 1. Make sure Postgres is running.
+## Local (Docker)
 
-```bash
-brew services list   # should show postgresql@16 as "started"
-```
+A full copy of the stack on your own machine: Postgres, Airflow (with dbt),
+Metabase and the web app. It doesn't touch the cloud setup.
 
-### 2. Airflow runs as a background service - you shouldn't need to start it
+### Start it
 
-Airflow (`webserver` + `scheduler` + `triggerer`, via `standalone`) runs as a
-macOS `launchd` service, `com.weatherpipeline.airflow`, so the daily schedule
-keeps firing without a terminal window open. It starts automatically at
-login and restarts itself if it crashes.
+1. Install [Docker Desktop](https://www.docker.com/products/docker-desktop/)
+   and **open it once** - the first launch asks for your password and a
+   license agreement, and `docker` isn't available until it's running.
+2. Free the ports it needs - **5432** (Postgres), **8080** (Airflow),
+   **3000** (Metabase), **8001** (web app) - e.g. stop any native Postgres.
+3. From the project folder:
 
-```bash
-launchctl list | grep weatherpipeline   # confirm it's running
-```
+   ```bash
+   cp .env.example .env          # defaults work as-is
+   docker compose build
+   docker compose up airflow-init
+   docker compose up -d
+   ```
 
-Open [localhost:8080](http://localhost:8080) and log in with
-`admin` / `admin123`. Unpause `weather_pipeline` if needed.
+| Service | URL | Login |
+|---|---|---|
+| Web app | [localhost:8001](http://localhost:8001) | sign up - the first account becomes admin |
+| Airflow | [localhost:8080](http://localhost:8080) | `admin` / `admin` |
+| Metabase | [localhost:3000](http://localhost:3000) | create one on first run |
+| Postgres | `localhost:5432` | `warehouse` / `warehouse`, database `warehouse` |
 
-> `standalone` auto-generates a random admin password the *first* time it
-> creates that user, and prints it only once. If you get "Invalid login",
-> reset it:
-> `airflow users reset-password --username admin --password admin123`
+The local database starts **empty**. In Airflow, unpause `weather_pipeline`
+and trigger it once; it backfills 90 days, then runs daily while the stack
+is up. (The schemas, the `app_readonly` role and Airflow's metadata database
+are created automatically the first time the Postgres container starts.)
 
-**Do not run `airflow standalone` manually in a terminal** - that creates a
-second instance fighting the service for the same database and port 8080,
-which is what caused repeated "scheduler not running" / stale data problems
-before this was turned into a proper service. If you ever need to restart it
-intentionally:
+In Metabase, add a PostgreSQL database with host `postgres` (the container's
+name - not `localhost`), port `5432`, database `warehouse`, user and password
+`warehouse`.
 
-```bash
-launchctl kickstart -k gui/$(id -u)/com.weatherpipeline.airflow
-```
-
-To stop it (note: plain `stop` just gets restarted by `KeepAlive` - use
-`bootout` to actually turn it off, `bootstrap` to turn it back on):
-
-```bash
-launchctl bootout gui/$(id -u)/com.weatherpipeline.airflow
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.weatherpipeline.airflow.plist
-```
-
-The service definition lives at
-`~/Library/LaunchAgents/com.weatherpipeline.airflow.plist`; its logs are in
-`airflow_home/service_logs/`.
-
-If the webserver ever seems unreachable while `launchctl list` shows the
-service running: check for a stale `airflow_home/airflow-webserver.pid` left
-over from a force-killed previous instance (same root cause as the Postgres
-`postmaster.pid` issue above) - delete it and `kickstart -k` again.
-
-### 3. Run Metabase
+### Everyday commands
 
 ```bash
-cd "/Users/janvier/Data Engineer Project/metabase"
-/opt/homebrew/opt/openjdk/bin/java -jar metabase.jar
+docker compose ps                    # what's running
+docker compose logs -f webapp        # follow one service's logs
+docker compose up -d --build webapp  # rebuild + restart after changing api/ or frontend/
+docker compose down                  # stop everything (data is kept)
+docker compose down -v               # stop and DELETE all local data (fresh start)
 ```
 
-The first run takes a minute or two to set up Metabase's internal database.
-Open [localhost:3000](http://localhost:3000), finish the one-time setup, and
-add a Postgres connection:
-
-- Host: `localhost`, Port: `5432`, Database: `warehouse`
-- User: `warehouse`, Password: `warehouse`
-
-Dashboard ideas:
-
-- Average max temperature by city over time (`marts.fct_daily_weather`)
-- Rainy days per city per month (`is_rain_day`)
-- Actuals vs. forecast: join `marts.fct_daily_weather` and
-  `marts.weather_forecast` on `(city, date)` and plot both lines
-
-### 4. Run the web app (FastAPI + frontend)
+Run a single pipeline step by hand inside the Airflow container:
 
 ```bash
-cd "/Users/janvier/Data Engineer Project/api"
-export WAREHOUSE_DB_HOST=localhost WAREHOUSE_DB_PORT=5432 WAREHOUSE_DB_NAME=warehouse \
-       WAREHOUSE_DB_USER=warehouse WAREHOUSE_DB_PASSWORD=warehouse
-export APP_READONLY_DB_USER=app_readonly APP_READONLY_DB_PASSWORD=app_readonly
-../.venv/bin/uvicorn main:app --port 8001
+docker compose exec airflow-scheduler bash -c "cd /opt/airflow/extraction && python fetch_weather.py"
+docker compose exec airflow-scheduler bash -c "cd /opt/airflow/dbt/weather_dbt && dbt run --profiles-dir ."
+docker compose exec airflow-scheduler bash -c "cd /opt/airflow/forecast && python forecast_weather.py"
 ```
 
-Open [localhost:8001](http://localhost:8001) - it redirects to a login page
-since every page and API route requires an account. **The first person to
-sign up becomes an admin automatically**; everyone after that is a "viewer."
-There's no UI to promote a user later - do it by hand if needed:
+(`dbt` needs `dbt/weather_dbt/profiles.yml` - copy `profiles.yml.example` to
+`profiles.yml` once; it's gitignored and reads the same `WAREHOUSE_DB_*`
+variables the containers already set.)
+
+## Using the web app
+
+Open the deployed URL (cloud) or [localhost:8001](http://localhost:8001)
+(Docker). It redirects to a login page, since every page and API route
+requires an account. **The first person to sign up becomes an admin
+automatically**; everyone after that is a "viewer." Users are stored in the
+environment's own database, so the cloud app and the local app have separate
+accounts. There's no UI to promote a user later - do it by hand if needed:
+
 ```sql
 UPDATE app.users SET role = 'admin' WHERE email = '...';
 ```
@@ -373,18 +365,30 @@ Once logged in, the sidebar has five sections:
 - **Database** (admin only) - a text box to run read-only SQL directly
   against the warehouse. See "Security model" below for how this is kept
   safe even though it accepts arbitrary queries.
-- **Data Pipeline** (any logged-in user) - recent Airflow DAG runs and, for
-  whichever run you click, its three tasks and their states. Read-only -
-  reads Airflow's own SQLite metadata DB directly, no Airflow API needed.
+- **Data Pipeline** (any logged-in user) - recent pipeline runs and, for
+  whichever run you click, its steps and their states. Read-only.
 - **Audit Log** (admin only) - every signup, login (success and failure),
   logout, and SQL query run through the Database tool (including ones the
   SELECT-only check blocked), newest first.
 
-FastAPI serves both the JSON API (under `/api/*`) and the static frontend
-from the same process, so there's nothing else to run and no CORS setup
-needed.
+### Running the web app without Docker
 
-#### Embedding Metabase
+```bash
+cd api
+pip install -r requirements.txt
+export WAREHOUSE_DB_HOST=... WAREHOUSE_DB_PORT=5432 WAREHOUSE_DB_NAME=... \
+       WAREHOUSE_DB_USER=... WAREHOUSE_DB_PASSWORD=...
+export APP_READONLY_DB_USER=app_readonly APP_READONLY_DB_PASSWORD=...
+uvicorn main:app --port 8001
+```
+
+(Add `WAREHOUSE_DB_SSLMODE=require` when pointing at a hosted database.)
+Other settings, all optional: `SESSION_SECRET_KEY`, `PIPELINE_SOURCE`
+(`github` or `airflow`), `METABASE_SITE_URL` / `METABASE_EMBED_SECRET` /
+`METABASE_DASHBOARD_ID`, `GITHUB_TOKEN` (raises GitHub's API rate limit for
+the pipeline page).
+
+### Embedding Metabase
 
 This needs a couple of one-time clicks in Metabase itself (can't be done
 with page automation - it needs your Metabase login):
@@ -394,11 +398,16 @@ with page automation - it needs your Metabase login):
 2. Open the dashboard you want embedded, open its URL - the number at the
    end is its **dashboard ID** (e.g. `localhost:3000/dashboard/2` → `2`).
 3. On that dashboard, **Share → Embed this dashboard → Publish**.
-4. Set both before starting the web app:
+4. Set both before starting the web app - for Docker, put them in `.env` and
+   run `docker compose up -d webapp`; otherwise export them:
    ```bash
    export METABASE_EMBED_SECRET=<the secret key from step 1>
    export METABASE_DASHBOARD_ID=<the id from step 2>
    ```
+   Keep the secret out of git - it can forge embed tokens for that Metabase.
+   (The embedded dashboard also has to be reachable from the *viewer's*
+   browser, so a deployed app can only embed a Metabase that's hosted
+   somewhere public, not one on `localhost`.)
 
 Until these are set, the Metabase section just shows a message saying so -
 nothing breaks. This is deliberately **static (signed) embedding, not a
@@ -407,7 +416,7 @@ passed this app's own login, so the Metabase dashboard stays behind the
 same auth as everything else here, instead of being reachable by anyone who
 has the URL.
 
-#### Security model
+### Security model
 
 - **Passwords** are hashed with `bcrypt`, never stored or logged in plain
   text, and the login/signup form has a show/hide toggle so you can check
@@ -455,111 +464,19 @@ session; `/api/db/*` and `/api/audit/*` additionally require the admin role):
 | `GET /api/audit/log`                   | last 100 audit log entries (admin)                   |
 | `GET /api/health`                      | `{"status": "ok"}` if the DB connection works        |
 
-## Running steps manually (outside Airflow)
+## A note on macOS
 
-Handy while developing, so you don't have to re-trigger the whole DAG.
-
-```bash
-# Extraction
-cd extraction
-../.venv/bin/python fetch_weather.py
-
-# dbt models + tests
-cd ../dbt/weather_dbt
-../../.venv/bin/dbt run --profiles-dir .
-../../.venv/bin/dbt test --profiles-dir .
-
-# Forecast (needs marts.fct_daily_weather to be populated first)
-cd ../../forecast
-../.venv/bin/python forecast_weather.py
-```
-
-## Known issues (macOS)
-
-### Airflow/gunicorn crash-loops with SIGSEGV
-
-`airflow standalone` (and plain `airflow webserver`) forks worker processes,
-and each forked worker calls `setproctitle()` to rename itself for `ps`/
-Activity Monitor. On this macOS version, that native call segfaults inside
-CoreFoundation/os_log right after fork, even with `setproctitle`'s own
-built-in fix for this class of bug (its issue #113). Left unfixed, gunicorn
-keeps restarting the crashing worker in an endless loop, which drives up CPU
-use and the number of processes.
-
-**Fix (already applied to this project's `.venv`):** a `.pth` file in the
-venv's `site-packages` that turns `setproctitle` into a harmless no-op on
-macOS for every Python process using this venv. It only changes how
-processes are labeled in `ps`; Airflow itself is unaffected.
-
-If `airflow standalone` crash-loops with repeated `SIGSEGV` lines again (for
-example after recreating the venv), recreate the two files from the setup
-script above. Or check whether a newer `setproctitle` release has fixed it
-upstream (`pip index versions setproctitle`) and remove the workaround if so.
-
-### Task processes hang forever on the macOS proxy lookup
-
-Before every HTTP call, `requests` checks the OS for a configured proxy. On
-macOS this goes through `_scproxy`, which talks to the `cfprefsd` system
-service. When that happens inside a subprocess Airflow started (as
-`extract_weather` always is), the call can hang forever instead of failing.
-The process sits at ~100% CPU, and Airflow never retries or kills it. Stuck
-processes pile up across runs and starve the scheduler of CPU. That's what
-caused the "scheduler does not appear to be running" banner (not SQLite).
-
-**Fix (already applied in `fetch_weather.py`):** HTTP calls go through a
-`requests.Session()` with `trust_env = False`, which skips the proxy lookup
-entirely. There's no proxy to honor in this project anyway.
-
-If you see an `airflow tasks run ... extract_weather` process stuck at ~100%
-CPU for more than a few seconds (`ps aux | grep extract_weather`), `kill -9`
-the stuck PID(s). Send any new HTTP calls you add to the project through a
-session set up the same way.
-
-### Postgres connections can also hang forever (same root cause, different call)
-
-The exact same `cfprefsd` flakiness above can also strike `psycopg2.connect()`:
-`libpq` probes for a GSSAPI/Kerberos credential cache before every connection
-(even though this project never uses Kerberos), and that probe routes
-through the same unreliable macOS service and can hang forever.
-
-**Partial fix:** every `psycopg2.connect()` call passes `gssencmode="disable"`
-to skip that probe. This helps but isn't 100% reliable on its own - the hang
-is intermittent, not deterministic.
-
-**The real fix:** a `signal.alarm()`-based timeout does **not** work here.
-The hang happens inside a macOS Mach IPC call that doesn't yield back to
-Python between instructions, so the alarm never fires - confirmed by testing
-it directly. The only thing that reliably stops a hung connection is
-`SIGKILL` sent from *outside* the process. So `extraction/fetch_weather.py`
-and `forecast/forecast_weather.py` both run their real work in a
-`multiprocessing.Process` with a wall-clock budget (`RUN_TIMEOUT_SECONDS`,
-120s); if it doesn't finish in time, the parent kills the subprocess outright
-and raises, so Airflow fails the task and retries instead of blocking the
-pipeline for hours. `dbt_run` doesn't need this treatment - it's a
-`BashOperator`, so Airflow's own `execution_timeout` (5 minutes, set in
-`default_args`) is monitored from a *different* process than the one that
-could hang, which stays responsive to normal signals.
-
-If a scheduled run ever sits in "running" for hours with no data showing up,
-check `ps aux | grep "tasks run"` for a stuck process before assuming
-anything else is wrong - this class of bug has now shown up in three
-unrelated call sites (`requests`, `libpq`, likely not the last).
-
-## Stopping / resetting
-
-```bash
-# Stop Airflow:  Ctrl+C in its terminal
-# Stop Metabase: Ctrl+C in its terminal
-brew services stop postgresql@16   # stop Postgres (data persists)
-```
-
-To fully reset the warehouse data:
-
-```bash
-psql -U "$(whoami)" -d postgres -c "DROP DATABASE warehouse;"
-psql -U "$(whoami)" -d postgres -c "CREATE DATABASE warehouse OWNER warehouse;"
-psql "postgresql://warehouse:warehouse@localhost:5432/warehouse" -f sql/init_warehouse_schemas.sql
-```
+`extraction/fetch_weather.py` and `forecast/forecast_weather.py` run their
+real work in a subprocess with a 120-second wall-clock limit **on macOS
+only** (elsewhere they just run inline). That's left over from running the
+pipeline natively on a Mac, where certain system calls (`requests`' proxy
+lookup, `libpq`'s Kerberos/GSS probe) could hang forever inside the
+`cfprefsd` system service, in a way a Python-level timeout can't interrupt -
+only killing the process from outside works. `requests` is also configured
+with `trust_env = False` and the Postgres connections with
+`gssencmode="disable"` to avoid those code paths. None of this matters in
+Docker or on GitHub Actions; it's kept so running the scripts directly on a
+Mac still works.
 
 ## Next steps / ideas
 
@@ -572,8 +489,6 @@ psql "postgresql://warehouse:warehouse@localhost:5432/warehouse" -f sql/init_war
   before fitting.
 - Add air-quality data (Open-Meteo has a free air-quality API) as a second
   source.
-- Add retry/backoff in the DAG to handle API outages gracefully.
-- Swap Metabase for Superset, or build a Streamlit app for a custom
-  dashboard.
-- Move the warehouse to a free-tier cloud Postgres (e.g. Supabase, Neon) and
-  Airflow to a small VM once you're ready to go beyond local.
+- Host Metabase too (e.g. on Render with its own app database) so the
+  embedded dashboard works from the deployed web app.
+- Switch the Render service to a linked GitHub account so it auto-deploys.

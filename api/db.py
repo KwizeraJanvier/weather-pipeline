@@ -4,11 +4,11 @@ import psycopg2
 import psycopg2.extras
 
 
-def _connect(user: str, password: str):
+def _connect(user: str, password: str, dbname: str | None = None):
     return psycopg2.connect(
         host=os.environ.get("WAREHOUSE_DB_HOST", "localhost"),
         port=os.environ.get("WAREHOUSE_DB_PORT", "5432"),
-        dbname=os.environ.get("WAREHOUSE_DB_NAME", "warehouse"),
+        dbname=dbname or os.environ.get("WAREHOUSE_DB_NAME", "warehouse"),
         user=user,
         password=password,
         # 'prefer' (the libpq default) is fine for local Postgres; Neon (and
