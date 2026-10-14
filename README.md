@@ -294,6 +294,8 @@ Metabase and the web app. It doesn't touch the cloud setup.
    license agreement, and `docker` isn't available until it's running.
 2. Free the ports it needs - **5432** (Postgres), **8080** (Airflow),
    **3000** (Metabase), **8001** (web app) - e.g. stop any native Postgres.
+   If 8080 or 3000 are taken, set `AIRFLOW_PORT` / `METABASE_PORT` in `.env`
+   (e.g. 8081 / 3001) and use those in the URLs below.
 3. From the project folder:
 
    ```bash

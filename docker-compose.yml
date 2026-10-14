@@ -68,7 +68,7 @@ services:
     environment: *airflow-common-env
     volumes: *airflow-common-volumes
     ports:
-      - "8080:8080"
+      - "${AIRFLOW_PORT:-8080}:8080"
     command: webserver
 
   airflow-scheduler:
@@ -86,7 +86,7 @@ services:
     depends_on:
       - postgres
     ports:
-      - "3000:3000"
+      - "${METABASE_PORT:-3000}:3000"
 
   webapp:
     build:
