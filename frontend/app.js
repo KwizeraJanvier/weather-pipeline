@@ -17,6 +17,8 @@ async function fetchJSON(url, options) {
 async function initShell() {
   currentUser = await fetchJSON("/api/auth/me");
   document.getElementById("user-email").textContent = currentUser.email;
+  document.getElementById("user-role").textContent = currentUser.role;
+  document.getElementById("user-avatar").textContent = currentUser.email.charAt(0).toUpperCase();
   if (currentUser.role === "admin") {
     document.getElementById("nav-database").hidden = false;
     document.getElementById("nav-audit").hidden = false;
@@ -55,14 +57,17 @@ async function loadRainStats() {
     .map(
       (s) => `
       <tr>
-        <td>${s.city}</td>
+        <td><strong>${s.city}</strong></td>
         <td>${s.rain_days} / ${s.total_days}</td>
-        <td>${s.rain_pct}%</td>
+        <td><div class="bar-cell"><div class="bar-track"><div class="bar-fill" style="width:${Math.min(100, s.rain_pct)}%"></div></div>${s.rain_pct}%</div></td>
         <td>${s.avg_temp_rain_day ?? "-"}&deg;C</td>
         <td>${s.avg_temp_non_rain_day ?? "-"}&deg;C</td>
       </tr>`
     )
     .join("");
+  const days = Math.max(0, ...stats.map((s) => s.total_days));
+  document.getElementById("kpi-cities").textContent = stats.length;
+  document.getElementById("kpi-days").textContent = days;
 }
 
 async function loadCityChart(city) {
@@ -77,26 +82,61 @@ async function loadCityChart(city) {
   const forecastPoints = forecast.map((r) => ({ x: r.date, y: r.predicted_temp_max_c }));
 
   if (chart) chart.destroy();
-  chart = new Chart(document.getElementById("temp-chart"), {
+  const ctx = document.getElementById("temp-chart").getContext("2d");
+  const grad = ctx.createLinearGradient(0, 0, 0, 340);
+  grad.addColorStop(0, "rgba(29,111,232,0.28)");
+  grad.addColorStop(1, "rgba(29,111,232,0.00)");
+  chart = new Chart(ctx, {
     type: "line",
     data: {
       datasets: [
-        { label: "Actual max temp (°C)", data: actualPoints, borderColor: "#2f6fed", backgroundColor: "#2f6fed", tension: 0.25 },
-        { label: "Forecast max temp (°C)", data: forecastPoints, borderColor: "#f2a93c", backgroundColor: "#f2a93c", borderDash: [6, 4], tension: 0.25 },
+        { label: "Actual max temp (°C)", data: actualPoints, borderColor: "#1d6fe8", backgroundColor: grad, fill: true, borderWidth: 2.5, pointRadius: 0, pointHoverRadius: 5, tension: 0.35 },
+        { label: "Forecast max temp (°C)", data: forecastPoints, borderColor: "#f2a93c", backgroundColor: "#f2a93c", borderWidth: 2.5, borderDash: [7, 5], pointRadius: 3, pointHoverRadius: 6, tension: 0.35 },
       ],
     },
     options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { position: "top", align: "end", labels: { usePointStyle: true, boxWidth: 8, color: "#5f6f8c" } },
+        tooltip: { backgroundColor: "#0b1530", padding: 10, cornerRadius: 8, displayColors: true },
+      },
       scales: {
-        x: { type: "time", time: { unit: "day" } },
-        y: { title: { display: true, text: "°C" } },
+        x: { type: "time", time: { unit: "day", tooltipFormat: "MMM d, yyyy" }, grid: { display: false }, ticks: { color: "#5f6f8c", maxRotation: 0, autoSkip: true, maxTicksLimit: 12 } },
+        y: { grid: { color: "rgba(20,50,110,0.08)" }, ticks: { color: "#5f6f8c", callback: (v) => `${v}°` } },
       },
     },
   });
 
+  const lastActual = actual[actual.length - 1];
+  const firstForecast = forecast[0];
+  document.getElementById("kpi-latest").textContent = lastActual ? `${lastActual.temperature_max_c}°C` : "-";
+  document.getElementById("kpi-latest-sub").textContent = lastActual ? `${city} · ${lastActual.date}` : "";
+  document.getElementById("kpi-forecast").textContent = firstForecast ? `${Number(firstForecast.predicted_temp_max_c).toFixed(1)}°C` : "-";
+  document.getElementById("kpi-forecast-sub").textContent = firstForecast ? `${city} · ${firstForecast.date}` : "";
+
   status.textContent = `${actual.length} actual days, ${forecast.length} forecast days`;
 }
 
+async function loadPipelineKpi() {
+  try {
+    const runs = await fetchJSON("/api/pipeline/runs");
+    const el = document.getElementById("kpi-pipeline");
+    if (!runs.length) {
+      el.textContent = "No runs yet";
+      return;
+    }
+    const r = runs[0];
+    el.innerHTML = `<span class="pill pill-${r.state}">${r.state}</span>`;
+    document.getElementById("kpi-pipeline-sub").textContent = fmtTime(r.end_date || r.start_date);
+  } catch (err) {
+    document.getElementById("kpi-pipeline").textContent = "n/a";
+  }
+}
+
 async function initDashboard() {
+  loadPipelineKpi();
   await loadCities();
   await loadRainStats();
   const select = document.getElementById("city-select");
@@ -229,7 +269,20 @@ async function loadRuns() {
   if (runs.length) loadTasks(runs[0].run_id);
 }
 
+const STEP_INFO = {
+  extract_weather: ["Extract", "Open-Meteo API → raw layer"],
+  dbt_run: ["Transform", "dbt: staging → marts"],
+  forecast_weather: ["Forecast", "7-day temperature model"],
+};
+
+function duration(start, end) {
+  if (!start || !end) return "";
+  const sec = Math.max(0, Math.round((new Date(end) - new Date(start)) / 1000));
+  return sec >= 60 ? `${Math.floor(sec / 60)}m ${sec % 60}s` : `${sec}s`;
+}
+
 async function loadTasks(runId) {
+  document.querySelectorAll(".run-row").forEach((r) => r.classList.toggle("selected", r.dataset.runId === runId));
   const tasks = await fetchJSON(`/api/pipeline/runs/${encodeURIComponent(runId)}/tasks`);
   document.querySelector("#tasks-table tbody").innerHTML = tasks
     .map(
@@ -242,6 +295,19 @@ async function loadTasks(runId) {
       </tr>`
     )
     .join("");
+
+  document.getElementById("flow-sub").textContent = `Run ${runId}`;
+  document.getElementById("flow").innerHTML = tasks
+    .map((t) => {
+      const [title, desc] = STEP_INFO[t.task_id] || [t.task_id, ""];
+      const state = t.state ?? "pending";
+      return `<div class="flow-node s-${state}">
+        <h3>${title}</h3><p>${desc}</p>
+        <span class="pill pill-${state}">${state}</span>
+        <span class="status" style="margin-left:6px">${duration(t.start_date, t.end_date)}</span>
+      </div>`;
+    })
+    .join('<div class="flow-arrow">&rarr;</div>');
 }
 
 // ---- Audit log (admin only) ----------------------------------------------
