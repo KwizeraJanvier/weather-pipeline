@@ -85,6 +85,12 @@ services:
     image: metabase/metabase:latest
     depends_on:
       - postgres
+    environment:
+      # Keep Metabase's own data (dashboards, users, embedding secret) in a
+      # named volume so it survives container recreation.
+      MB_DB_FILE: /metabase-data/metabase.db
+    volumes:
+      - metabase_data:/metabase-data
     ports:
       - "${METABASE_PORT:-3000}:3000"
 
@@ -114,4 +120,5 @@ services:
 
 volumes:
   postgres_data:
+  metabase_data:
   airflow_logs:
