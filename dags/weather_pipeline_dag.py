@@ -20,7 +20,12 @@ from forecast_weather import run as run_forecast
 
 default_args = {
     "owner": "data-eng",
-    "retries": 1,
+    # The laptop running Docker is often asleep/offline when a run starts, so
+    # retry for a few hours (10m, 20m, 40m, then hourly) before giving up.
+    "retries": 6,
+    "retry_delay": timedelta(minutes=10),
+    "retry_exponential_backoff": True,
+    "max_retry_delay": timedelta(hours=1),
     # General safety net: fail fast and retry instead of a hung task
     # blocking the pipeline indefinitely.
     "execution_timeout": timedelta(minutes=5),
@@ -31,7 +36,9 @@ with DAG(
     description="Fetch daily weather history, transform it with dbt, and forecast a few days ahead",
     default_args=default_args,
     start_date=datetime(2026, 9, 1),
-    schedule_interval="@daily",
+    # 07:00 UTC = 09:00 Kigali, when the laptop is usually awake (midnight UTC
+    # runs kept failing on DNS while it slept)
+    schedule_interval="0 7 * * *",
     catchup=False,
     tags=["weather", "etl"],
 ) as dag:

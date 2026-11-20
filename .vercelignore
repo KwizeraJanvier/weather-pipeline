@@ -1,0 +1,16 @@
+# Only api/ and frontend/ are deployed to Vercel - keep the upload small and
+# keep local data/secrets out of it.
+.env
+.venv
+.migration
+airflow_home
+anaconda_projects
+dags
+dbt
+docker
+extraction
+forecast
+metabase
+sql
+*.png
+**/__pycache__

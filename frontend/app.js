@@ -111,6 +111,13 @@ async function loadCityChart(city) {
 
   const lastActual = actual[actual.length - 1];
   const firstForecast = forecast[0];
+  // Measured history ends yesterday (the archive API only has finished days),
+  // so today's value comes from the forecast model.
+  const isoDay = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const today = isoDay(new Date());
+  const yesterday = isoDay(new Date(Date.now() - 864e5));
+  document.getElementById("kpi-latest-label").textContent = lastActual && lastActual.date === yesterday ? "Yesterday's max temp" : "Latest measured max temp";
+  document.getElementById("kpi-forecast-label").textContent = firstForecast && firstForecast.date === today ? "Today's max temp (forecast)" : "Next forecast";
   document.getElementById("kpi-latest").textContent = lastActual ? `${lastActual.temperature_max_c}°C` : "-";
   document.getElementById("kpi-latest-sub").textContent = lastActual ? `${city} · ${lastActual.date}` : "";
   document.getElementById("kpi-forecast").textContent = firstForecast ? `${Number(firstForecast.predicted_temp_max_c).toFixed(1)}°C` : "-";
