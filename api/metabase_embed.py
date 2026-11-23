@@ -18,8 +18,12 @@ METABASE_EMBED_SECRET = os.environ.get("METABASE_EMBED_SECRET")
 METABASE_DASHBOARD_ID = os.environ.get("METABASE_DASHBOARD_ID")
 
 
+def is_configured() -> bool:
+    return bool(METABASE_EMBED_SECRET and METABASE_DASHBOARD_ID)
+
+
 def get_embed_url() -> str:
-    if not METABASE_EMBED_SECRET or not METABASE_DASHBOARD_ID:
+    if not is_configured():
         raise HTTPException(
             status_code=503,
             detail="Metabase embedding isn't configured yet - set METABASE_EMBED_SECRET "

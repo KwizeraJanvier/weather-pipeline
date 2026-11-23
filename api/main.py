@@ -12,7 +12,7 @@ import pipeline
 from audit import log_action, recent_entries
 from auth import create_user, get_current_user, get_user_by_email, require_admin, verify_password
 from db import query
-from metabase_embed import get_embed_url
+from metabase_embed import get_embed_url, is_configured as metabase_configured
 from sql_runner import run_query
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
@@ -152,6 +152,13 @@ def rain_stats(user: dict = Depends(get_current_user)):
     )
 
 
+@app.get("/api/metabase/status")
+def metabase_status(user: dict = Depends(get_current_user)):
+    # Lets the frontend hide the Metabase page where there's no Metabase to
+    # embed (e.g. the Vercel deployment - Metabase only runs in local Docker)
+    return {"configured": metabase_configured()}
+
+
 @app.get("/api/metabase/embed-url")
 def metabase_embed_url(user: dict = Depends(get_current_user)):
     return {"url": get_embed_url()}
@@ -205,5 +212,7 @@ def pipeline_run_tasks(run_id: str, user: dict = Depends(get_current_user)):
 
 
 # Must be mounted last - it's a catch-all for "/" and would otherwise shadow
-# the /api/* routes above.
-app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
+# the /api/* routes above. Skipped when deployed as the backend-only Vercel
+# project, where frontend/ is a separate project and isn't uploaded.
+if FRONTEND_DIR.is_dir():
+    app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")

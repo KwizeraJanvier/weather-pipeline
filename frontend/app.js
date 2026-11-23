@@ -23,6 +23,9 @@ async function initShell() {
     document.getElementById("nav-database").hidden = false;
     document.getElementById("nav-audit").hidden = false;
   }
+  fetchJSON("/api/metabase/status")
+    .then(({ configured }) => (document.getElementById("nav-metabase").hidden = !configured))
+    .catch(() => {});
 
   document.getElementById("logout-btn").addEventListener("click", async () => {
     await fetch("/api/auth/logout", { method: "POST" });
